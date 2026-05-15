@@ -775,6 +775,7 @@ describe('Static audit: voice auto-restart recursion (THE actual fix)', () => {
     expect(APP_SRC).toMatch(/setTimeout\(\(\) => \{[\s\S]*?restartFnRef\.current\(\)[\s\S]*?\}, 100\)/);
   });
   it('re-checks userWantsActive after delay (user might have clicked stop in between)', () => {
-    expect(APP_SRC).toMatch(/setTimeout\(\(\) => \{\s*\/\/ Re-check the intent flag[\s\S]*?if \(userWantsActiveRef\.current\)/);
+    // The setTimeout body must check userWantsActiveRef again before restarting
+    expect(APP_SRC).toMatch(/setTimeout\(\(\) => \{[\s\S]*?if \(userWantsActiveRef\.current\)[\s\S]*?restartFnRef\.current\(\)/);
   });
 });

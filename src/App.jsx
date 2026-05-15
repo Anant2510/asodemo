@@ -1752,6 +1752,7 @@ const useSpeechRecognition = ({ onResult, lang = 'en-US' } = {}) => {
       };
 
       rec.onerror = (event) => {
+        console.log('🎤 VOICE: onerror fired:', event.error, '| userWantsActive:', userWantsActiveRef.current);
         // 'no-speech' fires after ~5s silence in Chrome. We do NOT treat this
         // as a real error or surface it — the onend that follows will trigger
         // an auto-restart since the user still wants the mic active.
@@ -1772,38 +1773,38 @@ const useSpeechRecognition = ({ onResult, lang = 'en-US' } = {}) => {
       };
 
       rec.onend = () => {
-        // CRITICAL: if the user still wants the mic active, the browser ended
-        // the session prematurely (Chrome's habit even with continuous=true,
-        // or after a no-speech timeout). Recreate the session so it's
-        // uninterrupted from the user's perspective.
-        //
-        // Note: we can't reuse the same `rec` instance — modern Chrome throws
-        // InvalidStateError if you call .start() on an already-ended instance.
-        // So we create a FRESH recognition by calling our outer start() again.
-        // This is what makes the mic "stay on" through Chrome's premature ends.
+        console.log('🎤 VOICE: onend fired | userWantsActive:', userWantsActiveRef.current, '| restartFnRef set:', !!restartFnRef.current);
         if (userWantsActiveRef.current) {
-          // Push to next tick so the browser fully finishes the previous session
-          // before we open a new one. Skipping this causes overlapping-session errors.
           setTimeout(() => {
-            // Re-check the intent flag after the delay — user might have clicked stop
+            console.log('🎤 VOICE: 100ms tick | re-checking userWantsActive:', userWantsActiveRef.current, '| restartFn ready:', !!restartFnRef.current);
             if (userWantsActiveRef.current) {
-              // Call the outer start function recursively to create a new instance.
-              // We use restartFnRef so the closure here can reach the latest start().
               if (restartFnRef.current) {
+                console.log('🎤 VOICE: calling restartFnRef.current() to spawn fresh recognition');
                 restartFnRef.current();
+              } else {
+                console.error('🎤 VOICE: restartFnRef.current is null — cannot restart. Bug in initialization.');
+                userWantsActiveRef.current = false;
+                setListening(false);
+                setInterim('');
               }
+            } else {
+              console.log('🎤 VOICE: user cleared intent during 100ms wait — not restarting');
             }
           }, 100);
         } else {
-          // User-initiated stop — clean up normally
+          console.log('🎤 VOICE: user-initiated stop — cleaning up');
           setListening(false);
           setInterim('');
         }
       };
 
-      rec.onstart = () => setListening(true);
+      rec.onstart = () => {
+        console.log('🎤 VOICE: onstart fired | listening now true');
+        setListening(true);
+      };
 
       recognitionRef.current = rec;
+      console.log('🎤 VOICE: about to call rec.start() | userWantsActive:', userWantsActiveRef.current);
       rec.start();
     } catch (err) {
       userWantsActiveRef.current = false;
@@ -1880,6 +1881,7 @@ const VoiceMicButton = ({ value, setValue, disabled = false, size = 36, title })
     e.preventDefault();
     e.stopPropagation();
     if (disabled) return;
+    console.log('🎤 VOICE: mic button clicked | currently listening:', listening);
     if (listening) stop();
     else start();
   };
