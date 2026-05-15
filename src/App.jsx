@@ -1707,6 +1707,13 @@ const useSpeechRecognition = ({ onResult, lang = 'en-US' } = {}) => {
   // start to create a fresh recognition instance. Without this, restarts would
   // either reuse the dead instance (InvalidStateError) or capture stale start.
   const restartFnRef = useRef(null);
+  // Network-error tracking. Chrome fires `network` errors transiently — often
+  // the very FIRST recognition attempt fails this way, but subsequent retries
+  // succeed. We count consecutive network errors with NO successful transcript
+  // in between; if it exceeds the threshold, we give up. A successful onresult
+  // resets the count.
+  const networkErrorCountRef = useRef(0);
+  const MAX_CONSECUTIVE_NETWORK_ERRORS = 5;
 
   // Keep the latest onResult callback accessible to the recognition event
   // handler without re-creating the recognition instance on every render.
@@ -1719,18 +1726,24 @@ const useSpeechRecognition = ({ onResult, lang = 'en-US' } = {}) => {
     recognitionRef.current = null;
   }, []);
 
-  const start = useCallback(() => {
+  const start = useCallback((isUserInitiated = true) => {
     if (!supported) { setError('Voice input not supported in this browser'); return; }
     // Mark user intent: they want the mic active. This flag drives auto-restart
     // if the browser ends the session prematurely.
     userWantsActiveRef.current = true;
+    // Only reset the network-error counter on a fresh user click. Auto-restart
+    // calls (passed isUserInitiated=false) keep the counter so we can detect
+    // persistent failure and eventually give up.
+    if (isUserInitiated) {
+      networkErrorCountRef.current = 0;
+      setError(null);
+    }
     // If a session already exists, stop it cleanly before creating a new one.
     // Calling .start() on an already-started recognition throws InvalidStateError.
     if (recognitionRef.current) {
       try { recognitionRef.current.stop(); } catch (e) { /* ignore */ }
       recognitionRef.current = null;
     }
-    setError(null);
     setInterim('');
     try {
       const rec = new RecognitionCtor();
@@ -1748,27 +1761,41 @@ const useSpeechRecognition = ({ onResult, lang = 'en-US' } = {}) => {
           else interimChunk += piece;
         }
         if (interimChunk) setInterim(interimChunk);
-        if (finalChunk && onResultRef.current) onResultRef.current(finalChunk.trim());
+        if (finalChunk && onResultRef.current) {
+          // Successful transcription — reset network error count so transient
+          // glitches don't accumulate and trigger an unwanted give-up later
+          networkErrorCountRef.current = 0;
+          onResultRef.current(finalChunk.trim());
+        }
       };
 
       rec.onerror = (event) => {
-        console.log('🎤 VOICE: onerror fired:', event.error, '| userWantsActive:', userWantsActiveRef.current);
-        // 'no-speech' fires after ~5s silence in Chrome. We do NOT treat this
-        // as a real error or surface it — the onend that follows will trigger
-        // an auto-restart since the user still wants the mic active.
-        // Same for 'aborted' (user-initiated stop).
-        // Real errors: not-allowed, audio-capture, network → surface to user
-        // AND clear userWantsActive so we don't auto-restart on something fatal.
+        console.log('🎤 VOICE: onerror fired:', event.error, '| userWantsActive:', userWantsActiveRef.current, '| networkErrors:', networkErrorCountRef.current);
+        // Recoverable errors — let onend trigger auto-restart, don't surface to user:
+        //   'no-speech'  — user paused, Chrome timed out after ~5s silence
+        //   'aborted'    — user-initiated stop (called via our stop())
+        //   'network'    — Chrome speech-api glitch. Usually transient. Count
+        //                  these; if too many consecutive without success, give up.
         if (event.error === 'no-speech' || event.error === 'aborted') {
-          return;   // silent — let onend handle restart-or-not based on user intent
+          return;   // silent, restart will run
         }
+        if (event.error === 'network') {
+          networkErrorCountRef.current++;
+          if (networkErrorCountRef.current >= MAX_CONSECUTIVE_NETWORK_ERRORS) {
+            // Persistent failure — stop trying and tell the user
+            userWantsActiveRef.current = false;
+            setError('Voice transcription unavailable. Check that your browser can reach Google\'s speech service (corporate firewalls, VPN, or ad-blockers may interfere).');
+            return;
+          }
+          return;   // silent, will auto-restart
+        }
+        // Truly fatal errors — surface to user and stop auto-restart
         const friendly = {
           'not-allowed': 'Microphone permission denied. Allow it in your browser settings.',
           'service-not-allowed': 'Microphone permission denied.',
           'audio-capture': 'No microphone detected on this device',
-          'network': 'Voice transcription unavailable (network error)',
         }[event.error] ?? `Voice error: ${event.error}`;
-        userWantsActiveRef.current = false;   // fatal — don't auto-restart
+        userWantsActiveRef.current = false;
         setError(friendly);
       };
 
@@ -1779,8 +1806,8 @@ const useSpeechRecognition = ({ onResult, lang = 'en-US' } = {}) => {
             console.log('🎤 VOICE: 100ms tick | re-checking userWantsActive:', userWantsActiveRef.current, '| restartFn ready:', !!restartFnRef.current);
             if (userWantsActiveRef.current) {
               if (restartFnRef.current) {
-                console.log('🎤 VOICE: calling restartFnRef.current() to spawn fresh recognition');
-                restartFnRef.current();
+                console.log('🎤 VOICE: calling restartFnRef.current(false) to spawn fresh recognition (auto-restart, preserve error counter)');
+                restartFnRef.current(false);
               } else {
                 console.error('🎤 VOICE: restartFnRef.current is null — cannot restart. Bug in initialization.');
                 userWantsActiveRef.current = false;

@@ -764,18 +764,51 @@ describe('Static audit: voice auto-restart recursion (THE actual fix)', () => {
     expect(APP_SRC).toContain('restartFnRef');
     expect(APP_SRC).toMatch(/useEffect\(\(\) => \{ restartFnRef\.current = start;[\s\S]*?\}, \[start\]\)/);
   });
-  it('onend calls restartFnRef.current() (creates fresh recognition) instead of rec.start()', () => {
+  it('onend calls restartFnRef.current(false) (auto-restart preserves error counter)', () => {
     // We should NOT see rec.start() inside onend — that was the buggy pattern
-    // We SHOULD see restartFnRef.current() — the fix
-    expect(APP_SRC).toMatch(/onend = \(\) => \{[\s\S]*?restartFnRef\.current\(\)/);
+    // We SHOULD see restartFnRef.current(false) — passes false to preserve counter
+    expect(APP_SRC).toMatch(/onend = \(\) => \{[\s\S]*?restartFnRef\.current\(false\)/);
     // Confirm we removed the old broken rec.start() restart attempt
     expect(APP_SRC).not.toMatch(/onend = \(\) => \{[\s\S]{0,400}try \{ rec\.start\(\); \}/);
   });
   it('100ms restart delay (gives browser time to release the old session)', () => {
-    expect(APP_SRC).toMatch(/setTimeout\(\(\) => \{[\s\S]*?restartFnRef\.current\(\)[\s\S]*?\}, 100\)/);
+    expect(APP_SRC).toMatch(/setTimeout\(\(\) => \{[\s\S]*?restartFnRef\.current\(false\)[\s\S]*?\}, 100\)/);
   });
   it('re-checks userWantsActive after delay (user might have clicked stop in between)', () => {
     // The setTimeout body must check userWantsActiveRef again before restarting
-    expect(APP_SRC).toMatch(/setTimeout\(\(\) => \{[\s\S]*?if \(userWantsActiveRef\.current\)[\s\S]*?restartFnRef\.current\(\)/);
+    expect(APP_SRC).toMatch(/setTimeout\(\(\) => \{[\s\S]*?if \(userWantsActiveRef\.current\)[\s\S]*?restartFnRef\.current\(false\)/);
+  });
+});
+
+describe('Static audit: voice network-error recovery (THE fix for "mic dies in 1 sec")', () => {
+  // Root cause: corporate networks / ad-blockers / VPNs / Chrome glitches cause
+  // SpeechRecognition to fire `network` errors. The previous code treated
+  // `network` as fatal and gave up — that's why the mic appeared to die
+  // immediately. The fix: treat `network` as recoverable like `no-speech`.
+  it('network errors are NOT classified as fatal (no setError, no userWantsActive=false)', () => {
+    // The friendly-error map should NOT contain a network entry anymore
+    expect(APP_SRC).not.toMatch(/'network': 'Voice transcription unavailable \(network error\)'/);
+  });
+  it('network errors increment a counter for retry tracking', () => {
+    expect(APP_SRC).toContain('networkErrorCountRef');
+    expect(APP_SRC).toMatch(/networkErrorCountRef\.current\+\+/);
+  });
+  it('network counter has a give-up threshold (MAX_CONSECUTIVE_NETWORK_ERRORS)', () => {
+    expect(APP_SRC).toContain('MAX_CONSECUTIVE_NETWORK_ERRORS');
+    expect(APP_SRC).toMatch(/MAX_CONSECUTIVE_NETWORK_ERRORS = 5/);
+  });
+  it('successful onresult resets the network error counter', () => {
+    // A transcript reset the counter so transient glitches dont accumulate
+    expect(APP_SRC).toMatch(/networkErrorCountRef\.current = 0;\s*onResultRef\.current/);
+  });
+  it('user-initiated start (isUserInitiated=true) resets the network counter', () => {
+    expect(APP_SRC).toMatch(/if \(isUserInitiated\)[\s\S]*?networkErrorCountRef\.current = 0/);
+  });
+  it('start signature accepts isUserInitiated flag (default true for user clicks)', () => {
+    expect(APP_SRC).toMatch(/const start = useCallback\(\(isUserInitiated = true\) =>/);
+  });
+  it('persistent network failure shows a useful error message to user', () => {
+    // After MAX_CONSECUTIVE_NETWORK_ERRORS, surface explanation
+    expect(APP_SRC).toMatch(/corporate firewalls.*VPN.*ad-blockers/i);
   });
 });
