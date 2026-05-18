@@ -493,71 +493,6 @@ describe('Static audit: anonymous (guest) browsing', () => {
   });
 });
 
-describe('Static audit: voice input', () => {
-  it('useSpeechRecognition hook is defined', () => {
-    expect(APP_SRC).toContain('const useSpeechRecognition');
-  });
-  it('VoiceMicButton component is defined', () => {
-    expect(APP_SRC).toContain('const VoiceMicButton');
-  });
-  it('hook checks for both standard and webkit SpeechRecognition', () => {
-    expect(APP_SRC).toContain('window.SpeechRecognition || window.webkitSpeechRecognition');
-  });
-  it('hook returns supported=false on browsers without API', () => {
-    // VoiceMicButton should hide when unsupported instead of being disabled (cleaner UX)
-    expect(APP_SRC).toMatch(/if \(!supported\) return null/);
-  });
-  it('hook handles permission-denied error gracefully', () => {
-    expect(APP_SRC).toContain("'not-allowed'");
-    expect(APP_SRC).toMatch(/Microphone permission denied/i);
-  });
-  it('hook handles no-microphone error gracefully', () => {
-    expect(APP_SRC).toContain("'audio-capture'");
-    expect(APP_SRC).toContain('No microphone detected');
-  });
-  it('hook handles transcription network error gracefully', () => {
-    expect(APP_SRC).toContain("'network'");
-  });
-  it('hook handles no-speech (user silent) gracefully', () => {
-    expect(APP_SRC).toContain("'no-speech'");
-  });
-  it('hook handles user-initiated abort silently (no error toast)', () => {
-    // 'aborted' is now part of the early-return path in onerror alongside no-speech
-    expect(APP_SRC).toMatch(/event\.error === 'no-speech' \|\| event\.error === 'aborted'/);
-  });
-  it('hook cleans up recognition instance on unmount', () => {
-    expect(APP_SRC).toMatch(/useEffect\(\(\) => \(\) => \{[\s\S]*?recognitionRef\.current\?\.stop\(\)/);
-  });
-  it('hook uses interimResults for live transcript feedback', () => {
-    expect(APP_SRC).toContain('interimResults = true');
-  });
-  it('hook default language is en-US', () => {
-    expect(APP_SRC).toMatch(/lang = 'en-US'/);
-  });
-  it('VoiceMicButton renders pulsing ring while listening', () => {
-    expect(APP_SRC).toContain('voice-ring');
-    expect(APP_SRC).toMatch(/@keyframes voice-ring/);
-  });
-  it('VoiceMicButton has accessibility label', () => {
-    expect(APP_SRC).toMatch(/aria-label.*Stop voice input.*Start voice input/);
-  });
-  it('shopper chat has VoiceMicButton wired', () => {
-    expect(APP_SRC).toMatch(/<VoiceMicButton[^>]*setValue=\{setInput\}[^>]*title="Click to speak to the AI agent"/);
-  });
-  it('Merch Assistant has VoiceMicButton wired (when LLM enabled)', () => {
-    expect(APP_SRC).toMatch(/llmEnabled && <VoiceMicButton/);
-  });
-  it('Kit Builder has VoiceMicButton wired', () => {
-    expect(APP_SRC).toMatch(/<VoiceMicButton[^>]*disabled=\{phase === 'thinking'\}/);
-  });
-  it('VoiceMicButton has loading-state guard (disables during AI call)', () => {
-    expect(APP_SRC).toContain('disabled={loading}');
-  });
-  it('voice transcription appends to existing text (mixed typing + speech)', () => {
-    // Confirms transcribed text concatenates to current input rather than replacing
-    expect(APP_SRC).toMatch(/trimmedPrev \? `\$\{trimmedPrev\} \$\{finalText\}` : finalText/);
-  });
-});
 
 describe('Static audit: voice on banner editor', () => {
   it('Merch Tool banner editor has VoiceMicButton', () => {
@@ -701,114 +636,67 @@ describe('Static audit: persona-weighted showResults picks (chat/page consistenc
   });
 });
 
-describe('Static audit: voice mic toggle + auto-restart behavior', () => {
-  it('VoiceMicButton uses click-to-toggle (no hold/release logic)', () => {
-    expect(APP_SRC).toMatch(/onClick=\{handleClick\}/);
-    // Click handler should toggle based on listening state
-    expect(APP_SRC).toMatch(/handleClick[\s\S]*?if \(listening\) stop\(\);\s*else start\(\)/);
+
+describe('Static audit: Deepgram voice transcription (server-side)', () => {
+  // Replaces the old Web Speech API. Audio recorded via MediaRecorder, uploaded
+  // to our Cloudflare Worker /v1/transcribe endpoint, which forwards to Deepgram.
+  it('useDeepgramRecording hook is defined', () => {
+    expect(APP_SRC).toContain('const useDeepgramRecording');
   });
-  it('button does NOT use mousedown/mouseup/mouseleave (those caused premature kills)', () => {
+  it('VoiceMicButton component is defined', () => {
+    expect(APP_SRC).toContain('const VoiceMicButton');
+  });
+  it('hook uses MediaRecorder API (not SpeechRecognition)', () => {
+    expect(APP_SRC).toContain('MediaRecorder');
+    expect(APP_SRC).not.toContain('useSpeechRecognition');
+    expect(APP_SRC).not.toContain('webkitSpeechRecognition');
+  });
+  it('hook requests audio via getUserMedia', () => {
+    expect(APP_SRC).toContain('navigator.mediaDevices.getUserMedia');
+  });
+  it('hook picks the best supported audio mime type (codec fallback chain)', () => {
+    expect(APP_SRC).toContain('pickAudioMimeType');
+    expect(APP_SRC).toContain('audio/webm;codecs=opus');
+    expect(APP_SRC).toContain('audio/mp4');   // Safari
+  });
+  it('uploadAndTranscribe posts to /v1/transcribe on the proxy URL', () => {
+    expect(APP_SRC).toContain('/v1/transcribe');
+    expect(APP_SRC).toMatch(/fetch\(url[\s\S]{0,150}method: 'POST'[\s\S]{0,200}body: audioBlob/);
+  });
+  it('hook handles NotAllowedError (mic permission denied) gracefully', () => {
+    expect(APP_SRC).toContain("'NotAllowedError'");
+    expect(APP_SRC).toMatch(/Microphone permission denied/i);
+  });
+  it('hook handles NotFoundError (no mic on device) gracefully', () => {
+    expect(APP_SRC).toContain("'NotFoundError'");
+    expect(APP_SRC).toMatch(/No microphone detected/i);
+  });
+  it('hook releases the mic stream on stop (no lingering tab indicator)', () => {
+    expect(APP_SRC).toMatch(/mediaStreamRef\.current\?\.getTracks\(\)\.forEach\(t => t\.stop\(\)\)/);
+  });
+  it('hook guards against empty/too-short recordings', () => {
+    expect(APP_SRC).toMatch(/blob\.size < 1024/);
+  });
+  it('VoiceMicButton has a transcribing state (between stop and transcript)', () => {
+    expect(APP_SRC).toContain('transcribing');
+    expect(APP_SRC).toMatch(/disabled=\{disabled \|\| transcribing\}/);
+  });
+  it('VoiceMicButton uses click-to-toggle (no hold/release logic)', () => {
+    expect(APP_SRC).toContain('onClick={handleClick}');
     expect(APP_SRC).not.toContain('onMouseDown={handlePointerDown}');
-    expect(APP_SRC).not.toContain('onMouseLeave={handlePointerLeave}');
   });
   it('60-second auto-stop safety prevents stuck-on mic', () => {
     expect(APP_SRC).toMatch(/setTimeout\([\s\S]*?try \{ stop\(\); \}[\s\S]*?\}, 60_000\)/);
   });
-  it('keyboard accessibility: Enter/Space toggle the mic', () => {
-    expect(APP_SRC).toMatch(/handleKeyDown[\s\S]*?key === 'Enter' \|\| e\.key === ' '/);
+  it('no diagnostic console.log statements left in production code', () => {
+    // We had 🎤 VOICE: ... logs during debugging; ensure they're all removed
+    expect(APP_SRC).not.toContain('🎤 VOICE');
   });
-  it('hook continuous mode is enabled (no auto-cutoff on pause)', () => {
-    expect(APP_SRC).toContain('rec.continuous = true');
+  it('voice transcription appends to existing text (mixed typing + speech)', () => {
+    expect(APP_SRC).toMatch(/trimmedPrev \? `\$\{trimmedPrev\} \$\{finalText\}` : finalText/);
   });
-  it('start() cleans up any existing recognition before creating new', () => {
-    expect(APP_SRC).toMatch(/if \(recognitionRef\.current\) \{[\s\S]*?try \{ recognitionRef\.current\.stop/);
-  });
-  it('touchAction: manipulation set (prevents long-press menus on mobile)', () => {
-    expect(APP_SRC).toContain("touchAction: 'manipulation'");
-  });
-  it('CRITICAL: hook auto-restarts on premature onend when user wants mic active', () => {
-    // The core fix for the "mic switches off in a sec" bug.
-    // Browser may end the session even with continuous=true; we restart it.
-    expect(APP_SRC).toContain('userWantsActiveRef');
-    expect(APP_SRC).toMatch(/onend = \(\) => \{[\s\S]*?if \(userWantsActiveRef\.current\)/);
-  });
-  it('hook silently ignores no-speech errors (so auto-restart can kick in)', () => {
-    // no-speech is the most common premature-end cause; we shouldn't surface it
-    expect(APP_SRC).toMatch(/event\.error === 'no-speech'[\s\S]*?return/);
-  });
-  it('hook clears user-intent flag on real fatal errors (so it does NOT auto-restart)', () => {
-    // not-allowed (permission denied), audio-capture, network: these are fatal
-    expect(APP_SRC).toMatch(/userWantsActiveRef\.current = false;[\s\S]{0,80}setError\(friendly\)/);
-  });
-  it('stop() clears user intent BEFORE stopping (so onend does not auto-restart)', () => {
-    // Ordering matters — if you stop first then clear intent, the onend
-    // handler races and might restart before we set the flag false.
-    expect(APP_SRC).toMatch(/const stop = useCallback\(\(\) => \{\s*[\s\S]*?userWantsActiveRef\.current = false;[\s\S]*?recognitionRef\.current\?\.stop/);
-  });
-  it('button does NOT use transform/scale animation (geometry instability caused mouseleave kills)', () => {
-    // The previous version had transform: scale(1.08) when listening, which
-    // caused the button to grow under the pointer and trigger spurious leaves.
-    expect(APP_SRC).not.toMatch(/transform: listening \? 'scale/);
-  });
-});
-
-describe('Static audit: voice auto-restart recursion (THE actual fix)', () => {
-  // The bug: when Chrome ends a recognition session prematurely (which it does
-  // even with continuous=true), my old code tried to call .start() on the SAME
-  // dead rec instance. Chrome throws InvalidStateError. The catch then gave up.
-  // Result: mic appeared to come on for ~1s then die.
-  //
-  // The fix: when onend fires while user still wants mic active, call the OUTER
-  // start() function again — which creates a FRESH recognition instance.
-  it('restartFnRef stores reference to latest start() function', () => {
-    expect(APP_SRC).toContain('restartFnRef');
-    expect(APP_SRC).toMatch(/useEffect\(\(\) => \{ restartFnRef\.current = start;[\s\S]*?\}, \[start\]\)/);
-  });
-  it('onend calls restartFnRef.current(false) (auto-restart preserves error counter)', () => {
-    // We should NOT see rec.start() inside onend — that was the buggy pattern
-    // We SHOULD see restartFnRef.current(false) — passes false to preserve counter
-    expect(APP_SRC).toMatch(/onend = \(\) => \{[\s\S]*?restartFnRef\.current\(false\)/);
-    // Confirm we removed the old broken rec.start() restart attempt
-    expect(APP_SRC).not.toMatch(/onend = \(\) => \{[\s\S]{0,400}try \{ rec\.start\(\); \}/);
-  });
-  it('100ms restart delay (gives browser time to release the old session)', () => {
-    expect(APP_SRC).toMatch(/setTimeout\(\(\) => \{[\s\S]*?restartFnRef\.current\(false\)[\s\S]*?\}, 100\)/);
-  });
-  it('re-checks userWantsActive after delay (user might have clicked stop in between)', () => {
-    // The setTimeout body must check userWantsActiveRef again before restarting
-    expect(APP_SRC).toMatch(/setTimeout\(\(\) => \{[\s\S]*?if \(userWantsActiveRef\.current\)[\s\S]*?restartFnRef\.current\(false\)/);
-  });
-});
-
-describe('Static audit: voice network-error recovery (THE fix for "mic dies in 1 sec")', () => {
-  // Root cause: corporate networks / ad-blockers / VPNs / Chrome glitches cause
-  // SpeechRecognition to fire `network` errors. The previous code treated
-  // `network` as fatal and gave up — that's why the mic appeared to die
-  // immediately. The fix: treat `network` as recoverable like `no-speech`.
-  it('network errors are NOT classified as fatal (no setError, no userWantsActive=false)', () => {
-    // The friendly-error map should NOT contain a network entry anymore
-    expect(APP_SRC).not.toMatch(/'network': 'Voice transcription unavailable \(network error\)'/);
-  });
-  it('network errors increment a counter for retry tracking', () => {
-    expect(APP_SRC).toContain('networkErrorCountRef');
-    expect(APP_SRC).toMatch(/networkErrorCountRef\.current\+\+/);
-  });
-  it('network counter has a give-up threshold (MAX_CONSECUTIVE_NETWORK_ERRORS)', () => {
-    expect(APP_SRC).toContain('MAX_CONSECUTIVE_NETWORK_ERRORS');
-    expect(APP_SRC).toMatch(/MAX_CONSECUTIVE_NETWORK_ERRORS = 5/);
-  });
-  it('successful onresult resets the network error counter', () => {
-    // A transcript reset the counter so transient glitches dont accumulate
-    expect(APP_SRC).toMatch(/networkErrorCountRef\.current = 0;\s*onResultRef\.current/);
-  });
-  it('user-initiated start (isUserInitiated=true) resets the network counter', () => {
-    expect(APP_SRC).toMatch(/if \(isUserInitiated\)[\s\S]*?networkErrorCountRef\.current = 0/);
-  });
-  it('start signature accepts isUserInitiated flag (default true for user clicks)', () => {
-    expect(APP_SRC).toMatch(/const start = useCallback\(\(isUserInitiated = true\) =>/);
-  });
-  it('persistent network failure shows a useful error message to user', () => {
-    // After MAX_CONSECUTIVE_NETWORK_ERRORS, surface explanation
-    expect(APP_SRC).toMatch(/corporate firewalls.*VPN.*ad-blockers/i);
+  it('all 4 mic call sites still wired (chat, kit, merch, banner)', () => {
+    const matches = APP_SRC.match(/<VoiceMicButton/g) || [];
+    expect(matches.length).toBe(4);
   });
 });

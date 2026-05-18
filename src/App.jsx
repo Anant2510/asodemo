@@ -1664,216 +1664,188 @@ const AppCtx = createContext(null);
 const useApp = () => useContext(AppCtx);
 
 // =============================================================================
-//   VOICE INPUT — Web Speech API hook + reusable mic button
+//   VOICE INPUT — MediaRecorder + Deepgram-via-Worker (server-side transcription)
 //   ---------------------------------------------------------------------------
-//   The browser's SpeechRecognition API sends audio to a vendor-specific cloud
-//   service for transcription (Google for Chrome, Microsoft for Edge, Apple for
-//   Safari). In a real Academy production deployment this would need legal
-//   review and would likely be replaced with a server-side transcription path
-//   (AWS Transcribe, Deepgram) routed through our worker so audio never leaves
-//   our infrastructure. For the TechDay demo, the browser API is fine.
+//   Architecture: Browser records audio via MediaRecorder → blob uploaded to our
+//   Cloudflare Worker → Worker forwards to Deepgram with the DEEPGRAM_API_KEY
+//   secret → transcript returns. The Deepgram API key never reaches the browser.
 //
-//   Browser support snapshot (May 2026):
-//   - Chrome/Edge/Opera/Safari (macOS/iOS 14.5+): supported
-//   - Firefox: NOT supported (button will render disabled with tooltip)
+//   Why not the browser's native SpeechRecognition?
+//   That API sends audio to Google/Apple/Microsoft cloud services. Many corporate
+//   networks block those endpoints (we hit this exact issue at IN-MAC-131317 — the
+//   `network` errors meant Chrome couldn't reach Google's speech-api). Deepgram
+//   via our own worker proxy gives us a single endpoint to whitelist and full
+//   control over the transcription pipeline.
+//
+//   Browser support for MediaRecorder is universal in modern browsers (Chrome,
+//   Edge, Safari 14.1+, Firefox). No webkitMediaRecorder fallback needed.
 // =============================================================================
-const getSpeechRecognitionCtor = () => {
-  if (typeof window === 'undefined') return null;
-  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+
+// Pick the best audio format this browser supports for MediaRecorder.
+// Deepgram accepts all of these — webm/opus is highest quality and smallest.
+const pickAudioMimeType = () => {
+  if (typeof MediaRecorder === 'undefined') return null;
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4',         // Safari preferred
+    'audio/ogg;codecs=opus',
+    'audio/ogg',
+  ];
+  for (const t of candidates) {
+    if (MediaRecorder.isTypeSupported(t)) return t;
+  }
+  return '';   // empty string lets MediaRecorder pick its default
 };
 
-// Hook that wraps the browser SpeechRecognition API. Returns a control object:
-//   { supported, listening, transcript, interim, error, start, stop, reset }
-// Components own their text state; the hook only owns the speech session.
-// On `start()`, transcript accumulates as the user speaks. The caller decides
-// when/how to merge it into its own input field via the onResult callback.
-const useSpeechRecognition = ({ onResult, lang = 'en-US' } = {}) => {
-  const RecognitionCtor = getSpeechRecognitionCtor();
-  const supported = Boolean(RecognitionCtor);
+// Hook: records mic audio, sends to our worker /v1/transcribe, returns the text.
+// Same return shape as the previous SpeechRecognition hook so callers don't change.
+//   { supported, listening, transcribing, error, start, stop, reset, interim }
+// - listening    : mic is actively recording
+// - transcribing : recording finished, upload+API call in flight
+// - interim      : always empty string (no live transcript in batch mode — kept
+//                  for API compatibility with the old hook)
+const useDeepgramRecording = ({ onResult } = {}) => {
+  const supported = typeof MediaRecorder !== 'undefined' && typeof navigator !== 'undefined' && Boolean(navigator?.mediaDevices?.getUserMedia);
 
   const [listening, setListening] = useState(false);
-  const [interim, setInterim] = useState('');
+  const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState(null);
-  const recognitionRef = useRef(null);
-  const onResultRef = useRef(onResult);
-  // userWantsActive: tracks whether the USER currently wants the mic on (set by
-  // start(), cleared by stop()). The browser may end its recognition session
-  // prematurely (Chrome ends after first result even with continuous=true; or
-  // it fires no-speech after 5s of silence). When that happens while the user
-  // still wants the mic active, we auto-restart. This is the standard workaround.
-  const userWantsActiveRef = useRef(false);
-  // restartFnRef: holds the latest `start` function so the rec.onend handler
-  // (defined inside an older closure of start) can call back into the CURRENT
-  // start to create a fresh recognition instance. Without this, restarts would
-  // either reuse the dead instance (InvalidStateError) or capture stale start.
-  const restartFnRef = useRef(null);
-  // Network-error tracking. Chrome fires `network` errors transiently — often
-  // the very FIRST recognition attempt fails this way, but subsequent retries
-  // succeed. We count consecutive network errors with NO successful transcript
-  // in between; if it exceeds the threshold, we give up. A successful onresult
-  // resets the count.
-  const networkErrorCountRef = useRef(0);
-  const MAX_CONSECUTIVE_NETWORK_ERRORS = 5;
 
-  // Keep the latest onResult callback accessible to the recognition event
-  // handler without re-creating the recognition instance on every render.
+  const mediaStreamRef = useRef(null);
+  const recorderRef = useRef(null);
+  const chunksRef = useRef([]);
+  const onResultRef = useRef(onResult);
+
+  // Keep the latest onResult callback accessible without recreating the recorder
   useEffect(() => { onResultRef.current = onResult; }, [onResult]);
 
-  // Cleanup any active recognition on unmount
+  // Cleanup on unmount — stop any active recording and release the mic stream
   useEffect(() => () => {
-    userWantsActiveRef.current = false;
-    try { recognitionRef.current?.stop(); } catch (e) { /* ignore */ }
-    recognitionRef.current = null;
+    try { recorderRef.current?.stop(); } catch (e) { /* ignore */ }
+    try { mediaStreamRef.current?.getTracks().forEach(t => t.stop()); } catch (e) { /* ignore */ }
+    recorderRef.current = null;
+    mediaStreamRef.current = null;
   }, []);
 
-  const start = useCallback((isUserInitiated = true) => {
-    if (!supported) { setError('Voice input not supported in this browser'); return; }
-    // Mark user intent: they want the mic active. This flag drives auto-restart
-    // if the browser ends the session prematurely.
-    userWantsActiveRef.current = true;
-    // Only reset the network-error counter on a fresh user click. Auto-restart
-    // calls (passed isUserInitiated=false) keep the counter so we can detect
-    // persistent failure and eventually give up.
-    if (isUserInitiated) {
-      networkErrorCountRef.current = 0;
-      setError(null);
+  // Upload the recorded audio blob to our worker, which forwards to Deepgram
+  const uploadAndTranscribe = useCallback(async (audioBlob, mimeType) => {
+    const proxyUrl = LLM_CONFIG.proxyUrl;
+    if (!proxyUrl) {
+      throw new Error('Voice transcription requires the worker proxy. Set VITE_LLM_PROXY_URL.');
     }
-    // If a session already exists, stop it cleanly before creating a new one.
-    // Calling .start() on an already-started recognition throws InvalidStateError.
-    if (recognitionRef.current) {
-      try { recognitionRef.current.stop(); } catch (e) { /* ignore */ }
-      recognitionRef.current = null;
+    // Trim trailing slash so we can concatenate the path cleanly
+    const base = proxyUrl.replace(/\/$/, '');
+    const url = `${base}/v1/transcribe`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': mimeType || 'audio/webm' },
+      body: audioBlob,
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(`Transcription failed (${response.status}): ${text || response.statusText}`);
     }
-    setInterim('');
+    const data = await response.json();
+    return data?.transcript || '';
+  }, []);
+
+  const start = useCallback(async () => {
+    if (!supported) {
+      setError('Voice input requires a modern browser with microphone support.');
+      return;
+    }
+    if (listening || transcribing) return;
+    setError(null);
     try {
-      const rec = new RecognitionCtor();
-      rec.lang = lang;
-      rec.continuous = true;        // keep listening through natural pauses; UI controls when to stop
-      rec.interimResults = true;    // show partial transcripts while user is mid-sentence
-      rec.maxAlternatives = 1;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      const mimeType = pickAudioMimeType();
+      // MediaRecorder constructor with the picked mime type. Some browsers
+      // require the options arg to be omitted entirely if mimeType is empty.
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      chunksRef.current = [];
 
-      rec.onresult = (event) => {
-        let finalChunk = '';
-        let interimChunk = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const piece = event.results[i][0].transcript;
-          if (event.results[i].isFinal) finalChunk += piece;
-          else interimChunk += piece;
-        }
-        if (interimChunk) setInterim(interimChunk);
-        if (finalChunk && onResultRef.current) {
-          // Successful transcription — reset network error count so transient
-          // glitches don't accumulate and trigger an unwanted give-up later
-          networkErrorCountRef.current = 0;
-          onResultRef.current(finalChunk.trim());
-        }
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
       };
 
-      rec.onerror = (event) => {
-        console.log('🎤 VOICE: onerror fired:', event.error, '| userWantsActive:', userWantsActiveRef.current, '| networkErrors:', networkErrorCountRef.current);
-        // Recoverable errors — let onend trigger auto-restart, don't surface to user:
-        //   'no-speech'  — user paused, Chrome timed out after ~5s silence
-        //   'aborted'    — user-initiated stop (called via our stop())
-        //   'network'    — Chrome speech-api glitch. Usually transient. Count
-        //                  these; if too many consecutive without success, give up.
-        if (event.error === 'no-speech' || event.error === 'aborted') {
-          return;   // silent, restart will run
+      recorder.onerror = (e) => {
+        setError(`Recording error: ${e?.error?.message || 'unknown'}`);
+        setListening(false);
+      };
+
+      recorder.onstop = async () => {
+        // Always release the mic — stops the browser tab indicator
+        try { mediaStreamRef.current?.getTracks().forEach(t => t.stop()); } catch (e) { /* ignore */ }
+        mediaStreamRef.current = null;
+        setListening(false);
+
+        const chunks = chunksRef.current;
+        chunksRef.current = [];
+        if (!chunks.length) {
+          // Nothing recorded (user clicked stop too fast or mic produced no audio)
+          return;
         }
-        if (event.error === 'network') {
-          networkErrorCountRef.current++;
-          if (networkErrorCountRef.current >= MAX_CONSECUTIVE_NETWORK_ERRORS) {
-            // Persistent failure — stop trying and tell the user
-            userWantsActiveRef.current = false;
-            setError('Voice transcription unavailable. Check that your browser can reach Google\'s speech service (corporate firewalls, VPN, or ad-blockers may interfere).');
-            return;
+        const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || 'audio/webm' });
+        // Guard: blobs under ~1kB are basically empty, don't waste an API call
+        if (blob.size < 1024) {
+          setError('Recording was too short. Please try again.');
+          return;
+        }
+
+        setTranscribing(true);
+        try {
+          const transcript = await uploadAndTranscribe(blob, recorder.mimeType || mimeType);
+          if (transcript && onResultRef.current) {
+            onResultRef.current(transcript);
+          } else if (!transcript) {
+            setError('No speech detected. Try again, louder.');
           }
-          return;   // silent, will auto-restart
-        }
-        // Truly fatal errors — surface to user and stop auto-restart
-        const friendly = {
-          'not-allowed': 'Microphone permission denied. Allow it in your browser settings.',
-          'service-not-allowed': 'Microphone permission denied.',
-          'audio-capture': 'No microphone detected on this device',
-        }[event.error] ?? `Voice error: ${event.error}`;
-        userWantsActiveRef.current = false;
-        setError(friendly);
-      };
-
-      rec.onend = () => {
-        console.log('🎤 VOICE: onend fired | userWantsActive:', userWantsActiveRef.current, '| restartFnRef set:', !!restartFnRef.current);
-        if (userWantsActiveRef.current) {
-          setTimeout(() => {
-            console.log('🎤 VOICE: 100ms tick | re-checking userWantsActive:', userWantsActiveRef.current, '| restartFn ready:', !!restartFnRef.current);
-            if (userWantsActiveRef.current) {
-              if (restartFnRef.current) {
-                console.log('🎤 VOICE: calling restartFnRef.current(false) to spawn fresh recognition (auto-restart, preserve error counter)');
-                restartFnRef.current(false);
-              } else {
-                console.error('🎤 VOICE: restartFnRef.current is null — cannot restart. Bug in initialization.');
-                userWantsActiveRef.current = false;
-                setListening(false);
-                setInterim('');
-              }
-            } else {
-              console.log('🎤 VOICE: user cleared intent during 100ms wait — not restarting');
-            }
-          }, 100);
-        } else {
-          console.log('🎤 VOICE: user-initiated stop — cleaning up');
-          setListening(false);
-          setInterim('');
+        } catch (err) {
+          setError(err?.message || 'Transcription failed.');
+        } finally {
+          setTranscribing(false);
         }
       };
 
-      rec.onstart = () => {
-        console.log('🎤 VOICE: onstart fired | listening now true');
-        setListening(true);
-      };
+      recorder.onstart = () => setListening(true);
 
-      recognitionRef.current = rec;
-      console.log('🎤 VOICE: about to call rec.start() | userWantsActive:', userWantsActiveRef.current);
-      rec.start();
+      recorderRef.current = recorder;
+      // Collect data in 100ms chunks. Final blob is assembled in onstop.
+      // The interval doesn't affect quality, just resilience to long pauses.
+      recorder.start(100);
     } catch (err) {
-      userWantsActiveRef.current = false;
-      setError(`Voice unavailable: ${err.message}`);
+      // Most common: user denied mic permission
+      const msg = err?.name === 'NotAllowedError'
+        ? 'Microphone permission denied. Allow it in your browser settings.'
+        : err?.name === 'NotFoundError'
+          ? 'No microphone detected on this device.'
+          : `Could not start recording: ${err?.message || 'unknown error'}`;
+      setError(msg);
       setListening(false);
+      // Clean up partial state
+      try { mediaStreamRef.current?.getTracks().forEach(t => t.stop()); } catch (e) { /* ignore */ }
+      mediaStreamRef.current = null;
     }
-  }, [supported, RecognitionCtor, lang]);
-
-  // Keep restartFnRef pointing at the latest `start`. The rec.onend handler
-  // calls through this ref so it can recreate the recognition instance via
-  // a fresh start() call. Cannot just close over `start` directly because
-  // that would freeze the reference at the time rec was created.
-  useEffect(() => { restartFnRef.current = start; }, [start]);
+  }, [supported, listening, transcribing, uploadAndTranscribe]);
 
   const stop = useCallback(() => {
-    // Clear user intent FIRST so the onend handler doesn't auto-restart
-    userWantsActiveRef.current = false;
-    try { recognitionRef.current?.stop(); } catch (e) { /* ignore */ }
+    try { recorderRef.current?.stop(); } catch (e) { /* ignore */ }
   }, []);
 
-  const reset = useCallback(() => {
-    setError(null);
-    setInterim('');
-  }, []);
+  const reset = useCallback(() => { setError(null); }, []);
 
-  return { supported, listening, interim, error, start, stop, reset };
+  // Compatibility: old hook returned `interim` for live partial transcripts.
+  // Batch mode has no interim, so always empty. Kept so the button doesn't break.
+  return { supported, listening, transcribing, interim: '', error, start, stop, reset };
 };
 
-// Reusable mic button — click to toggle on, click again to toggle off.
-// The session stays active until the user clicks again or a 60s safety
-// timeout fires (so it can never get stuck on indefinitely).
-//
-// Originally tried hybrid hold-to-talk + tap-to-toggle but the hold pattern
-// had subtle geometry issues (mouseleave fires mid-press kills the mic).
-// Pure click-to-toggle is more predictable and matches the user's mental model.
-//
-// Props:
-//   value      — current text value of the input we're augmenting
-//   setValue   — setter; called with new text when transcription arrives
-//   disabled   — match the surrounding form's disabled state (e.g. while loading)
-//   size       — button diameter in px (default 36 for comfortable hit target)
-//   title      — tooltip text override
+// Reusable mic button — click to start recording, click again to stop and transcribe.
+// Three visual states:
+//   1. Idle    — gray mic icon
+//   2. Listening (red, pulsing) — actively recording
+//   3. Transcribing (amber spinner) — uploading + waiting for Deepgram
 const VoiceMicButton = ({ value, setValue, disabled = false, size = 36, title }) => {
   const onResult = useCallback((finalText) => {
     if (!finalText) return;
@@ -1884,13 +1856,12 @@ const VoiceMicButton = ({ value, setValue, disabled = false, size = 36, title })
     });
   }, [setValue, value]);
 
-  const { supported, listening, interim, error, start, stop } = useSpeechRecognition({ onResult });
+  const { supported, listening, transcribing, error, start, stop } = useDeepgramRecording({ onResult });
 
-  // Hide entirely on browsers without API support
+  // Hide entirely if browser lacks MediaRecorder support (very old browsers).
   if (!supported) return null;
 
-  // 60-second safety cap — auto-stops if user forgets to click off.
-  // Reset whenever listening starts.
+  // 60-second safety cap — auto-stops recording if the user forgets to click off
   const autoStopTimer = useRef(null);
   useEffect(() => {
     if (autoStopTimer.current) clearTimeout(autoStopTimer.current);
@@ -1907,15 +1878,13 @@ const VoiceMicButton = ({ value, setValue, disabled = false, size = 36, title })
   const handleClick = (e) => {
     e.preventDefault();
     e.stopPropagation();
-    if (disabled) return;
-    console.log('🎤 VOICE: mic button clicked | currently listening:', listening);
+    if (disabled || transcribing) return;   // can't start a new one while transcribing
     if (listening) stop();
     else start();
   };
 
-  // Keyboard accessibility: Enter/Space also toggles
   const handleKeyDown = (e) => {
-    if (disabled) return;
+    if (disabled || transcribing) return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       if (listening) stop();
@@ -1923,31 +1892,42 @@ const VoiceMicButton = ({ value, setValue, disabled = false, size = 36, title })
     }
   };
 
-  // Compose tooltip with error / interim feedback
+  // Tooltip reflects current state
   const tooltip = error
     ? error
-    : listening
-      ? (interim ? `Hearing: "${interim}"` : 'Listening… click again to stop')
-      : (title || 'Click to speak — click again to stop');
+    : transcribing
+      ? 'Transcribing…'
+      : listening
+        ? 'Recording — click to stop'
+        : (title || 'Click to speak');
+
+  // Icon color/border by state
+  const stateColor =
+    error        ? T.amber :
+    transcribing ? T.violet :
+    listening    ? T.red :
+                   T.text2;
+  const stateBg =
+    transcribing ? 'rgba(157,92,255,0.18)' :
+    listening    ? 'rgba(255,77,77,0.22)' :
+                   'rgba(255,255,255,0.06)';
 
   return (
     <button
       type="button"
       onClick={handleClick}
       onKeyDown={handleKeyDown}
-      disabled={disabled}
+      disabled={disabled || transcribing}
       title={tooltip}
-      aria-label={listening ? 'Stop voice input' : 'Start voice input'}
+      aria-label={listening ? 'Stop recording' : transcribing ? 'Transcribing' : 'Start voice input'}
       style={{
-        background: listening ? 'rgba(255,77,77,0.22)' : 'rgba(255,255,255,0.06)',
-        border: listening ? `1px solid ${T.red}` : `1px solid transparent`,
-        color: listening ? T.red : (error ? T.amber : T.text2),
+        background: stateBg,
+        border: (listening || transcribing) ? `1px solid ${stateColor}` : `1px solid transparent`,
+        color: stateColor,
         width: size, height: size, borderRadius: '50%',
-        cursor: disabled ? 'not-allowed' : 'pointer',
+        cursor: (disabled || transcribing) ? 'wait' : 'pointer',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         position: 'relative',
-        // ONLY animate color — never size, never transform. Any geometry change
-        // during the press cycle risks the pointer falling off the button.
         transition: 'background-color 0.15s, border-color 0.15s, color 0.15s',
         userSelect: 'none',
         WebkitUserSelect: 'none',
@@ -1956,7 +1936,13 @@ const VoiceMicButton = ({ value, setValue, disabled = false, size = 36, title })
         touchAction: 'manipulation',
       }}
     >
-      {listening ? <Mic size={Math.round(size * 0.45)} className="pulse-soft" /> : error ? <MicOff size={Math.round(size * 0.45)} /> : <Mic size={Math.round(size * 0.45)} />}
+      {transcribing
+        ? <Loader2 size={Math.round(size * 0.45)} className="spin" />
+        : listening
+          ? <Mic size={Math.round(size * 0.45)} className="pulse-soft" />
+          : error
+            ? <MicOff size={Math.round(size * 0.45)} />
+            : <Mic size={Math.round(size * 0.45)} />}
       {listening && (
         <span
           style={{
@@ -2113,6 +2099,9 @@ const GlobalStyle = () => (
       50% { transform: scale(1.15); opacity: 0.2; }
       100% { transform: scale(1); opacity: 0.6; }
     }
+    /* Spinner for the transcribing state (Loader2 icon) */
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    .spin { animation: spin 1s linear infinite; }
 
     /* Orb breathing */
     @keyframes orb-breathe {

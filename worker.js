@@ -1,46 +1,40 @@
 /**
- * Cloudflare Worker — Anthropic API Proxy
+ * Cloudflare Worker — ASO TechDay Demo Proxy
  * ----------------------------------------------------------------------------
- * Receives chat requests from the ASO TechDay demo (anant2510.github.io/asodemo/),
- * adds the Anthropic API key from environment secrets, and forwards to Claude.
+ * Two endpoints, two upstream APIs, one shared key store:
  *
- * The key NEVER leaves this Worker — clients see only the chat response.
+ *   POST /v1/messages   → forwards to Anthropic (Claude) using ANTHROPIC_API_KEY
+ *   POST /v1/transcribe → forwards audio to Deepgram using DEEPGRAM_API_KEY
  *
- * Setup (one-time):
- *   1. Paste this entire file into the Cloudflare Worker editor
- *   2. Deploy
- *   3. Settings → Variables and Secrets → Add Secret:
- *        Name:  ANTHROPIC_API_KEY
- *        Value: sk-ant-api03-...  (your real key)
- *   4. Copy the Worker URL (looks like https://name.username.workers.dev)
- *   5. Paste it into App.jsx as PROXY_URL
+ * Both keys NEVER leave this Worker — clients only see the response.
+ * Legacy: POST / (no path) is also routed to /v1/messages for backward compat.
  *
- * Protections enabled:
- *   - Origin allowlist (only the GitHub Pages site can call)
- *   - Rate limit: 30 messages per IP per hour
- *   - Daily global cap: 500 total messages (resets at UTC midnight)
+ * Setup:
+ *   Settings → Variables and Secrets → Add Secret:
+ *     ANTHROPIC_API_KEY = sk-ant-api03-...
+ *     DEEPGRAM_API_KEY  = (your Deepgram key)
+ *
+ * Protections:
+ *   - Origin allowlist (only your GitHub Pages site can call)
+ *   - Rate limit: 30 chat / 30 transcribe per IP per hour (separate buckets)
+ *   - Daily global cap: 500 chat + 500 transcribe (resets at UTC midnight)
  */
 
-// EDIT THIS: add the origins you want to allow.
-// During dev you can include http://localhost:4173 and :5173 too.
 const ALLOWED_ORIGINS = [
   'https://anant2510.github.io',
   'http://localhost:5173',
   'http://localhost:4173',
 ];
 
-// Per-IP rate limit
 const RATE_LIMIT_PER_HOUR = 30;
-
-// Daily global cap (across all visitors). Prevents runaway cost if traffic spikes.
 const DAILY_GLOBAL_CAP = 500;
 
-// In-memory counters. Cloudflare Workers are stateless across regions, so these
-// reset when the Worker is redeployed or scaled. Good enough for demo-scale
-// abuse prevention. For production, use Cloudflare KV or Durable Objects.
-const ipBuckets = new Map();     // ip -> { count, resetAt }
-let dailyCount = 0;
-let dailyResetAt = nextUtcMidnight();
+// In-memory counters per route. Reset when the Worker scales/redeploys.
+// For production with real traffic, use Cloudflare KV or Durable Objects.
+const buckets = {
+  messages:   { ipMap: new Map(), daily: 0, dailyResetAt: nextUtcMidnight() },
+  transcribe: { ipMap: new Map(), daily: 0, dailyResetAt: nextUtcMidnight() },
+};
 
 function nextUtcMidnight() {
   const now = new Date();
@@ -48,39 +42,40 @@ function nextUtcMidnight() {
   return tomorrow.getTime();
 }
 
-function checkRateLimit(ip) {
+function checkRateLimit(route, ip) {
+  const bucket = buckets[route];
+  if (!bucket) return { ok: false, reason: 'Unknown route' };
+
   const now = Date.now();
-
-  // Reset daily counter at UTC midnight
-  if (now > dailyResetAt) {
-    dailyCount = 0;
-    dailyResetAt = nextUtcMidnight();
+  if (now > bucket.dailyResetAt) {
+    bucket.daily = 0;
+    bucket.dailyResetAt = nextUtcMidnight();
   }
-
-  if (dailyCount >= DAILY_GLOBAL_CAP) {
+  if (bucket.daily >= DAILY_GLOBAL_CAP) {
     return { ok: false, reason: 'Demo daily limit reached. Try again tomorrow.' };
   }
 
-  // Per-IP bucket
-  const bucket = ipBuckets.get(ip);
-  if (!bucket || now > bucket.resetAt) {
-    ipBuckets.set(ip, { count: 1, resetAt: now + 60 * 60 * 1000 });
-  } else if (bucket.count >= RATE_LIMIT_PER_HOUR) {
+  const ipBucket = bucket.ipMap.get(ip);
+  if (!ipBucket || now > ipBucket.resetAt) {
+    bucket.ipMap.set(ip, { count: 1, resetAt: now + 60 * 60 * 1000 });
+  } else if (ipBucket.count >= RATE_LIMIT_PER_HOUR) {
     return { ok: false, reason: 'Rate limit reached. Try again in an hour.' };
   } else {
-    bucket.count++;
+    ipBucket.count++;
   }
 
-  dailyCount++;
+  bucket.daily++;
   return { ok: true };
 }
 
 function cors(origin, allowed) {
-  // Reflect the origin if it's in the allowlist; otherwise no CORS headers.
   if (allowed) {
     return {
       'Access-Control-Allow-Origin': origin,
       'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      // Audio uploads use a binary Content-Type (audio/webm, audio/mp4, etc).
+      // Browsers consider these "non-simple" so they preflight; we must allow
+      // Content-Type explicitly in the preflight response.
       'Access-Control-Allow-Headers': 'Content-Type',
       'Access-Control-Max-Age': '86400',
     };
@@ -88,106 +83,151 @@ function cors(origin, allowed) {
   return {};
 }
 
+function jsonResponse(payload, status, corsHeaders) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...corsHeaders },
+  });
+}
+
+// ---------- Route handler: /v1/messages (Claude chat) -----------------------
+async function handleMessages(request, env, corsHeaders) {
+  if (!env.ANTHROPIC_API_KEY) {
+    return jsonResponse({ error: 'Proxy not configured — missing ANTHROPIC_API_KEY secret' }, 500, corsHeaders);
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch (e) {
+    return jsonResponse({ error: 'Invalid JSON body' }, 400, corsHeaders);
+  }
+  const { model, system, messages, max_tokens } = body;
+  if (!model || !messages || !Array.isArray(messages)) {
+    return jsonResponse({ error: 'Missing required fields: model, messages' }, 400, corsHeaders);
+  }
+
+  try {
+    const upstream = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({ model, system, messages, max_tokens: max_tokens || 1024 }),
+    });
+    const data = await upstream.json();
+    return jsonResponse(data, upstream.status, corsHeaders);
+  } catch (err) {
+    return jsonResponse({ error: 'Upstream error: ' + err.message }, 502, corsHeaders);
+  }
+}
+
+// ---------- Route handler: /v1/transcribe (Deepgram audio → text) -----------
+async function handleTranscribe(request, env, corsHeaders) {
+  if (!env.DEEPGRAM_API_KEY) {
+    return jsonResponse({ error: 'Voice transcription not configured — missing DEEPGRAM_API_KEY secret' }, 500, corsHeaders);
+  }
+
+  // The request body IS the audio blob. We forward it verbatim to Deepgram.
+  // Content-Type tells Deepgram what codec it is (audio/webm, audio/mp4, etc).
+  const contentType = request.headers.get('Content-Type') || 'audio/webm';
+  if (!contentType.startsWith('audio/')) {
+    return jsonResponse({ error: `Expected audio/* Content-Type, got ${contentType}` }, 400, corsHeaders);
+  }
+
+  // Lightweight size guard. Cloudflare allows up to 100MB request bodies but
+  // for short voice prompts anything over ~5MB is suspicious.
+  const contentLength = parseInt(request.headers.get('Content-Length') || '0', 10);
+  if (contentLength > 5 * 1024 * 1024) {
+    return jsonResponse({ error: 'Audio too large (max 5MB).' }, 413, corsHeaders);
+  }
+
+  // Deepgram REST endpoint. Nova-2 is the latest accurate model.
+  // smart_format=true adds punctuation/capitalization.
+  // Pricing: ~$0.0043/min for Nova-2 (free credit covers thousands of demos).
+  const dgUrl = 'https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&punctuate=true&language=en';
+
+  try {
+    const upstream = await fetch(dgUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Token ${env.DEEPGRAM_API_KEY}`,
+        'Content-Type': contentType,
+      },
+      // Stream the body straight through — no buffering, no JSON wrapping.
+      body: request.body,
+    });
+
+    if (!upstream.ok) {
+      const errText = await upstream.text().catch(() => '');
+      return jsonResponse(
+        { error: `Deepgram error (${upstream.status}): ${errText.slice(0, 200) || upstream.statusText}` },
+        upstream.status >= 500 ? 502 : upstream.status,
+        corsHeaders
+      );
+    }
+
+    const data = await upstream.json();
+    // Deepgram response shape: results.channels[0].alternatives[0].transcript
+    const transcript = data?.results?.channels?.[0]?.alternatives?.[0]?.transcript || '';
+    return jsonResponse({ transcript }, 200, corsHeaders);
+  } catch (err) {
+    return jsonResponse({ error: 'Transcription upstream error: ' + err.message }, 502, corsHeaders);
+  }
+}
+
+// ---------- Main dispatcher --------------------------------------------------
 export default {
   async fetch(request, env) {
     const origin = request.headers.get('Origin') || '';
     const allowed = ALLOWED_ORIGINS.includes(origin);
     const corsHeaders = cors(origin, allowed);
 
-    // CORS preflight
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // Health check
+    const url = new URL(request.url);
+    const path = url.pathname.replace(/\/+$/, '');   // strip trailing slash
+
     if (request.method === 'GET') {
-      return new Response(
-        JSON.stringify({
-          status: 'ok',
-          service: 'ASO Demo · Anthropic Proxy',
-          allowedOrigins: ALLOWED_ORIGINS,
-        }),
-        { headers: { 'Content-Type': 'application/json', ...corsHeaders } }
-      );
+      return jsonResponse({
+        status: 'ok',
+        service: 'ASO Demo · Proxy',
+        endpoints: ['POST /v1/messages (Claude chat)', 'POST /v1/transcribe (Deepgram audio→text)'],
+        allowedOrigins: ALLOWED_ORIGINS,
+      }, 200, corsHeaders);
     }
 
     if (request.method !== 'POST') {
       return new Response('Method not allowed', { status: 405, headers: corsHeaders });
     }
 
-    // Block disallowed origins
     if (!allowed) {
-      return new Response(
-        JSON.stringify({ error: 'Origin not allowed' }),
-        { status: 403, headers: { 'Content-Type': 'application/json' } }
-      );
+      return jsonResponse({ error: 'Origin not allowed' }, 403, {});
     }
 
-    // Key configured?
-    if (!env.ANTHROPIC_API_KEY) {
-      return new Response(
-        JSON.stringify({ error: 'Proxy not configured — missing ANTHROPIC_API_KEY secret' }),
-        { status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
-      );
-    }
-
-    // Rate limit by IP (Cloudflare provides this header)
+    // Route + rate-limit
     const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
-    const rl = checkRateLimit(ip);
-    if (!rl.ok) {
-      return new Response(
-        JSON.stringify({ error: rl.reason }),
-        { status: 429, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
-      );
+
+    // Routes:
+    //   /v1/messages  → chat (with legacy fallback at "" or "/")
+    //   /v1/transcribe → audio
+    if (path === '/v1/transcribe') {
+      const rl = checkRateLimit('transcribe', ip);
+      if (!rl.ok) return jsonResponse({ error: rl.reason }, 429, corsHeaders);
+      return handleTranscribe(request, env, corsHeaders);
     }
 
-    // Parse body
-    let body;
-    try {
-      body = await request.json();
-    } catch (e) {
-      return new Response(
-        JSON.stringify({ error: 'Invalid JSON body' }),
-        { status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
-      );
+    // Default: chat (covers /v1/messages AND legacy "/" POST for backward compat)
+    if (path === '/v1/messages' || path === '' || path === '/') {
+      const rl = checkRateLimit('messages', ip);
+      if (!rl.ok) return jsonResponse({ error: rl.reason }, 429, corsHeaders);
+      return handleMessages(request, env, corsHeaders);
     }
 
-    // Validate shape — only accept the fields we expect; never forward arbitrary fields
-    const { model, system, messages, max_tokens } = body;
-    if (!model || !messages || !Array.isArray(messages)) {
-      return new Response(
-        JSON.stringify({ error: 'Missing required fields: model, messages' }),
-        { status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
-      );
-    }
-
-    // Forward to Anthropic
-    try {
-      const anthropicResponse = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model,
-          system,
-          messages,
-          max_tokens: max_tokens || 1024,
-        }),
-      });
-
-      const data = await anthropicResponse.json();
-      return new Response(JSON.stringify(data), {
-        status: anthropicResponse.status,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders },
-      });
-    } catch (err) {
-      return new Response(
-        JSON.stringify({ error: 'Upstream error: ' + err.message }),
-        { status: 502, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
-      );
-    }
+    return jsonResponse({ error: `Unknown route: ${path}` }, 404, corsHeaders);
   },
 };

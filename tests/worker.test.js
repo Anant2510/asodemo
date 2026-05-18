@@ -306,3 +306,178 @@ describe('Worker: rate limiting', () => {
     expect(true).toBe(true);
   });
 });
+
+describe('Worker: /v1/transcribe (Deepgram audio→text)', () => {
+  // Helper to build an audio POST request
+  const audioRequest = (path = '/v1/transcribe', body = 'fake-audio-bytes', contentType = 'audio/webm') => {
+    return new Request(`https://example.workers.dev${path}`, {
+      method: 'POST',
+      headers: {
+        Origin: 'https://anant2510.github.io',
+        'Content-Type': contentType,
+        'Content-Length': String(body.length),
+      },
+      body,
+    });
+  };
+
+  // Mock Deepgram upstream
+  const stubDeepgramFetch = (transcript = 'show me hunting boots') => {
+    global.fetch = vi.fn(async () => new Response(
+      JSON.stringify({
+        results: { channels: [{ alternatives: [{ transcript }] }] }
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    ));
+  };
+
+  beforeEach(() => {
+    // Reset global.fetch between tests
+    global.fetch = undefined;
+  });
+
+  it('returns 500 if DEEPGRAM_API_KEY is missing', async () => {
+    stubDeepgramFetch();
+    const res = await callWorker(audioRequest(), { /* no DEEPGRAM_API_KEY */ });
+    expect(res.status).toBe(500);
+    const data = await res.json();
+    expect(data.error).toContain('DEEPGRAM_API_KEY');
+  });
+
+  it('rejects non-audio Content-Type with 400', async () => {
+    stubDeepgramFetch();
+    const req = audioRequest('/v1/transcribe', 'not-audio', 'application/json');
+    const res = await callWorker(req, { DEEPGRAM_API_KEY: 'dg-test' });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain('audio/');
+  });
+
+  it('rejects requests larger than 5MB with 413', async () => {
+    stubDeepgramFetch();
+    const req = new Request('https://example.workers.dev/v1/transcribe', {
+      method: 'POST',
+      headers: {
+        Origin: 'https://anant2510.github.io',
+        'Content-Type': 'audio/webm',
+        'Content-Length': String(6 * 1024 * 1024),   // 6MB
+      },
+      body: 'x',
+    });
+    const res = await callWorker(req, { DEEPGRAM_API_KEY: 'dg-test' });
+    expect(res.status).toBe(413);
+  });
+
+  it('forwards audio to Deepgram and returns transcript', async () => {
+    stubDeepgramFetch('show me hunting boots');
+    const res = await callWorker(audioRequest(), { DEEPGRAM_API_KEY: 'dg-test' });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.transcript).toBe('show me hunting boots');
+  });
+
+  it('uses Bearer-style Token auth with Deepgram', async () => {
+    const fetchSpy = vi.fn(async () => new Response(
+      JSON.stringify({ results: { channels: [{ alternatives: [{ transcript: '' }] }] } }),
+      { status: 200 }
+    ));
+    global.fetch = fetchSpy;
+    await callWorker(audioRequest(), { DEEPGRAM_API_KEY: 'dg-secret-key' });
+    expect(fetchSpy).toHaveBeenCalled();
+    const [, init] = fetchSpy.mock.calls[0];
+    expect(init.headers.Authorization).toBe('Token dg-secret-key');
+  });
+
+  it('forwards the audio Content-Type unchanged to Deepgram', async () => {
+    const fetchSpy = vi.fn(async () => new Response(
+      JSON.stringify({ results: { channels: [{ alternatives: [{ transcript: '' }] }] } }),
+      { status: 200 }
+    ));
+    global.fetch = fetchSpy;
+    await callWorker(audioRequest('/v1/transcribe', 'data', 'audio/mp4'), { DEEPGRAM_API_KEY: 'k' });
+    const [, init] = fetchSpy.mock.calls[0];
+    expect(init.headers['Content-Type']).toBe('audio/mp4');
+  });
+
+  it('targets Deepgram nova-2 model with smart_format', async () => {
+    const fetchSpy = vi.fn(async () => new Response(
+      JSON.stringify({ results: { channels: [{ alternatives: [{ transcript: '' }] }] } }),
+      { status: 200 }
+    ));
+    global.fetch = fetchSpy;
+    await callWorker(audioRequest(), { DEEPGRAM_API_KEY: 'k' });
+    const [url] = fetchSpy.mock.calls[0];
+    expect(url).toContain('api.deepgram.com');
+    expect(url).toContain('model=nova-2');
+    expect(url).toContain('smart_format=true');
+  });
+
+  it('returns empty transcript gracefully on no-speech audio', async () => {
+    global.fetch = vi.fn(async () => new Response(
+      JSON.stringify({ results: { channels: [{ alternatives: [{ transcript: '' }] }] } }),
+      { status: 200 }
+    ));
+    const res = await callWorker(audioRequest(), { DEEPGRAM_API_KEY: 'k' });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.transcript).toBe('');
+  });
+
+  it('returns 502 if Deepgram has a server error', async () => {
+    global.fetch = vi.fn(async () => new Response('Service Unavailable', { status: 503 }));
+    const res = await callWorker(audioRequest(), { DEEPGRAM_API_KEY: 'k' });
+    expect(res.status).toBe(502);
+    const data = await res.json();
+    expect(data.error).toContain('Deepgram');
+  });
+
+  it('blocks transcribe from disallowed origin', async () => {
+    const req = new Request('https://example.workers.dev/v1/transcribe', {
+      method: 'POST',
+      headers: { Origin: 'https://evil.com', 'Content-Type': 'audio/webm' },
+      body: 'data',
+    });
+    const res = await callWorker(req, { DEEPGRAM_API_KEY: 'k' });
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('Worker: routing', () => {
+  it('POST / (legacy, no path) still routes to /v1/messages for backward compat', async () => {
+    global.fetch = vi.fn(async () => new Response(
+      JSON.stringify({ content: [{ type: 'text', text: 'hi' }] }),
+      { status: 200 }
+    ));
+    const req = new Request('https://example.workers.dev/', {
+      method: 'POST',
+      headers: { Origin: 'https://anant2510.github.io', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-test', messages: [{ role: 'user', content: 'hi' }] }),
+    });
+    const res = await callWorker(req, { ANTHROPIC_API_KEY: 'sk-ant-test' });
+    expect(res.status).toBe(200);
+  });
+
+  it('POST /v1/messages routes to chat handler', async () => {
+    global.fetch = vi.fn(async () => new Response(
+      JSON.stringify({ content: [{ type: 'text', text: 'hi' }] }),
+      { status: 200 }
+    ));
+    const req = new Request('https://example.workers.dev/v1/messages', {
+      method: 'POST',
+      headers: { Origin: 'https://anant2510.github.io', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-test', messages: [{ role: 'user', content: 'hi' }] }),
+    });
+    const res = await callWorker(req, { ANTHROPIC_API_KEY: 'sk-ant-test' });
+    expect(res.status).toBe(200);
+  });
+
+  it('POST /unknown/path returns 404', async () => {
+    const req = new Request('https://example.workers.dev/unknown/path', {
+      method: 'POST',
+      headers: { Origin: 'https://anant2510.github.io', 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    const res = await callWorker(req, { ANTHROPIC_API_KEY: 'k', DEEPGRAM_API_KEY: 'k' });
+    expect(res.status).toBe(404);
+  });
+});

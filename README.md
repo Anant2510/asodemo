@@ -88,16 +88,21 @@ The proxy code lives in `worker.js` in the repo root (separate from the React ap
 1. Go to https://dash.cloudflare.com → Workers & Pages → Create application → Create Worker
 2. Name it something like `aso-demo-proxy`. Click Deploy with default "Hello World" code.
 3. Click **Edit Code**. Delete the default code. Paste the entire contents of `worker.js`. Click **Deploy** in the top right.
-4. Go to the Worker's **Settings → Variables and Secrets → Add**:
+4. Go to the Worker's **Settings → Variables and Secrets → Add**. Add TWO secrets:
    - Type: **Secret** (not Variable — Secret encrypts it)
    - Name: `ANTHROPIC_API_KEY` (exact case)
    - Value: your `sk-ant-api03-...` key
+
+   And:
+   - Type: **Secret**
+   - Name: `DEEPGRAM_API_KEY` (exact case)
+   - Value: your Deepgram key (from https://console.deepgram.com → API Keys). Powers voice input — without it, voice transcription returns 500 but text chat still works.
 5. Copy the Worker URL (looks like `https://aso-demo-proxy.username.workers.dev`)
 6. Set it in your local `.env.local` (`VITE_PROXY_URL=...`) and as a GitHub Actions Variable (same name)
 
 ### Testing the proxy
 
-Open the Worker URL in a browser. You should see JSON like `{"status":"ok","service":"ASO Demo · Anthropic Proxy",...}`. If you see that, it's alive.
+Open the Worker URL in a browser. You should see JSON like `{"status":"ok","service":"ASO Demo · Proxy","endpoints":["POST /v1/messages (Claude chat)","POST /v1/transcribe (Deepgram audio→text)"],...}`. If you see that, it's alive.
 
 ### Updating the allowed origins
 
