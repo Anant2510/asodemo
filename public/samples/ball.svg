@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="500" height="500">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F59E0B" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#EC4899" stop-opacity="0.95"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="65%">
+      <stop offset="0%" stop-color="rgba(255,255,255,0.3)"/>
+      <stop offset="100%" stop-color="rgba(255,255,255,0)"/>
+    </radialGradient>
+    <pattern id="grain" x="0" y="0" width="4" height="4" patternUnits="userSpaceOnUse">
+      <rect width="4" height="4" fill="rgba(255,255,255,0)"/>
+      <circle cx="1" cy="1" r="0.5" fill="rgba(255,255,255,0.06)"/>
+      <circle cx="3" cy="3" r="0.5" fill="rgba(0,0,0,0.04)"/>
+    </pattern>
+  </defs>
+  <rect width="500" height="500" fill="url(#bg)"/>
+  <rect width="500" height="500" fill="url(#glow)"/>
+  <circle cx="250" cy="225" r="100" fill="rgba(255,255,255,0.92)"/><polygon points="250,170 280,200 270,240 230,240 220,200" fill="rgba(0,0,0,0.6)"/><polygon points="280,200 320,210 305,250 270,240" fill="rgba(0,0,0,0.4)"/><polygon points="220,200 180,210 195,250 230,240" fill="rgba(0,0,0,0.4)"/><polygon points="270,240 305,250 285,290 250,280 230,240" fill="rgba(0,0,0,0.5)"/>
+  <rect width="500" height="500" fill="url(#grain)"/>
+  <text x="250" y="430" font-family="Inter,system-ui,sans-serif" font-weight="800" font-size="44" letter-spacing="3" text-anchor="middle" fill="rgba(255,255,255,0.95)">BALL</text>
+</svg>

@@ -1,0 +1,62 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        env:
+          # PROXY URL — your Cloudflare Worker (preferred). Not a secret (it's
+          # visible in the JS bundle), but stored in GitHub Variables so it's
+          # easy to update without editing source. Set this at:
+          # Settings → Secrets and variables → Actions → Variables tab → New repository variable
+          # Name: VITE_PROXY_URL  Value: https://your-worker.workers.dev
+          VITE_PROXY_URL: ${{ vars.VITE_PROXY_URL }}
+
+          # DIRECT KEY (NOT recommended for public deploys — exposes key in bundle).
+          # Only set this if you really want the public site to bypass the proxy.
+          # Settings → Secrets and variables → Actions → Secrets tab → New repository secret
+          VITE_ANTHROPIC_KEY: ${{ secrets.VITE_ANTHROPIC_KEY }}
+        run: npm run build
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

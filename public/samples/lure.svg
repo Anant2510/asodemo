@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="500" height="500">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22D3EE" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#10B981" stop-opacity="0.95"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="65%">
+      <stop offset="0%" stop-color="rgba(255,255,255,0.3)"/>
+      <stop offset="100%" stop-color="rgba(255,255,255,0)"/>
+    </radialGradient>
+    <pattern id="grain" x="0" y="0" width="4" height="4" patternUnits="userSpaceOnUse">
+      <rect width="4" height="4" fill="rgba(255,255,255,0)"/>
+      <circle cx="1" cy="1" r="0.5" fill="rgba(255,255,255,0.06)"/>
+      <circle cx="3" cy="3" r="0.5" fill="rgba(0,0,0,0.04)"/>
+    </pattern>
+  </defs>
+  <rect width="500" height="500" fill="url(#bg)"/>
+  <rect width="500" height="500" fill="url(#glow)"/>
+  <ellipse cx="250" cy="220" rx="120" ry="40" fill="rgba(255,255,255,0.92)"/><path d="M 370 220 L 410 200 L 410 240 Z" fill="rgba(255,255,255,0.92)"/><circle cx="170" cy="220" r="8" fill="rgba(0,0,0,0.4)"/><path d="M 130 230 L 100 250 M 130 235 L 100 260 M 130 240 L 105 270" stroke="rgba(255,255,255,0.8)" stroke-width="2" fill="none"/>
+  <rect width="500" height="500" fill="url(#grain)"/>
+  <text x="250" y="430" font-family="Inter,system-ui,sans-serif" font-weight="800" font-size="44" letter-spacing="3" text-anchor="middle" fill="rgba(255,255,255,0.95)">LURE</text>
+</svg>

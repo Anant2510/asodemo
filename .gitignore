@@ -1,0 +1,31 @@
+node_modules/
+dist/
+.DS_Store
+.vscode/
+*.log
+.env
+.env.local
+
+# Secrets & one-off provisioning scripts — never deploy
+.shopify-admin-token
+setup-shopify.cjs
+jake-orders.cjs
+/App.jsx
+
+# Secrets & one-off provisioning scripts — never deploy
+.shopify-admin-token
+setup-shopify.cjs
+jake-orders.cjs
+/App.jsx
+
+# Secrets & one-off provisioning scripts — never deploy
+.shopify-admin-token
+setup-shopify.cjs
+jake-orders.cjs
+/App.jsx
+
+# Secrets & one-off provisioning scripts — never deploy
+.shopify-admin-token
+setup-shopify.cjs
+jake-orders.cjs
+/App.jsx
