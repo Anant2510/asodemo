@@ -1042,6 +1042,178 @@ RULES:
   }
 }
 
+/* ============================================================================
+   PERSONALIZATION / DISRUPTION ENGINE
+   - sendEmail: posts to the Worker's /v1/email route (Resend) — real delivery.
+   - draftPersonalizedEmail: asks Claude to write a tailored email for one of
+     several scenarios (delay, cancel, back-in-stock, win-back, price-drop),
+     grounded in the customer's real order history.
+   - pickAlternate: chooses an in-stock catalog substitute for a cancelled item.
+   ============================================================================ */
+
+// Real email send through the Worker proxy (Resend server-side).
+async function sendEmail({ to, subject, html, text }) {
+  if (!LLM_CONFIG.proxyUrl) {
+    return { success: false, error: 'No proxy configured — email requires the Cloudflare Worker.' };
+  }
+  // Email route lives alongside /v1/messages on the same Worker.
+  const base = LLM_CONFIG.proxyUrl.replace(/\/v1\/messages\/?$/, '').replace(/\/+$/, '');
+  const url = `${base}/v1/email`;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to, subject, html, text }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { success: false, error: data?.error || `Email failed (${res.status})` };
+    return { success: true, id: data?.id || null };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+// ---- Agent client helpers (talk to the Worker's KV-backed agent routes) ----
+function _workerBase() {
+  return (LLM_CONFIG.proxyUrl || '').replace(/\/v1\/messages\/?$/, '').replace(/\/+$/, '');
+}
+// Build the email discount-accept link (Worker route → applies discount + marks accepted).
+function agentAcceptUrl(key, itemId) {
+  const base = _workerBase();
+  return `${base}/v1/agent/accept?key=${encodeURIComponent(key)}&item=${encodeURIComponent(itemId)}`;
+}
+// Push the browser's cart/conversion snapshot to KV so the cron agent can continue.
+async function agentSyncState({ key, cart, converted, lastPurchaseAt }) {
+  const base = _workerBase();
+  if (!base || !key) return null;
+  try {
+    const res = await fetch(`${base}/v1/agent/state`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, cart, converted, lastPurchaseAt }),
+    });
+    return await res.json().catch(() => null);
+  } catch { return null; }
+}
+// Read agent state back (to detect email-link acceptance → apply discount in-app).
+async function agentReadState(key) {
+  const base = _workerBase();
+  if (!base || !key) return null;
+  try {
+    const res = await fetch(`${base}/v1/agent/state?key=${encodeURIComponent(key)}`);
+    const data = await res.json().catch(() => null);
+    return data?.state || null;
+  } catch { return null; }
+}
+
+// Pick an in-stock alternate for a cancelled item: same category, closest price,
+// preferring higher rating. Excludes the cancelled product itself.
+function pickAlternate(cancelledItem, catalog) {
+  if (!cancelledItem) return null;
+  const cat = cancelledItem.category;
+  const price = cancelledItem.price || 0;
+  const pool = catalog.filter(p =>
+    (!cat || p.category === cat) &&
+    p.name !== cancelledItem.title &&
+    p.id !== cancelledItem.handle
+  );
+  const ranked = (pool.length ? pool : catalog.filter(p => p.name !== cancelledItem.title))
+    .map(p => ({ p, score: Math.abs((p.price || 0) - price) - (p.rating || 0) * 5 }))
+    .sort((a, b) => a.score - b.score);
+  return ranked[0]?.p || null;
+}
+
+// Build a re-evaluated ETA string for a delayed order.
+function reEvaluatedEta(extraDays = 3) {
+  const d = new Date(Date.now() + extraDays * 86400000);
+  return d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+}
+
+// Ask Claude to draft a personalized email for a given scenario. Returns
+// { subject, html, text } or null. Falls back to a templated email if the LLM
+// is unavailable, so the demo never dead-ends.
+async function draftPersonalizedEmail({ scenario, persona, customer, orders, focusItem, alternate, eta, homeStore }) {
+  const pName = customer?.firstName || PERSONAS[persona]?.name || 'there';
+  const historyLines = (orders || []).slice(0, 5).map(o =>
+    `- ${o.daysAgo != null ? o.daysAgo + ' days ago' : 'recently'}: ${o.items.map(i => i.title).join(', ')} ($${(o.total || 0).toFixed(2)})`
+  ).join('\n');
+
+  const scenarioBrief = {
+    delay: `One of ${pName}'s orders is delayed. Reassure them, apologize briefly, give the new estimated delivery date: ${eta}. Offer a small good-will gesture (free expedited shipping on the next order). Keep it warm and confident, not corporate.`,
+    cancel: `An item in ${pName}'s order had to be cancelled (out of stock): "${focusItem?.title}". Apologize, and proactively recommend this in-stock alternative we can ship right away: "${alternate?.name}" ($${alternate?.price?.toFixed(2)}). Explain in one line why it's a good match. Offer to swap it with one click.`,
+    backInStock: `An item ${pName} bought before is popular and back in stock: "${focusItem?.title}". Let them know it's available again at their ${homeStore?.city || 'local'} store, in case they want to restock.`,
+    winBack: `${pName} hasn't ordered in a while. Write a friendly win-back note referencing what they bought before, with a light incentive (10% off their category) to come back. No guilt, just warmth.`,
+    priceDrop: `The price dropped on something ${pName} bought or viewed: "${focusItem?.title}". Let them know it's now on sale and worth grabbing again or gifting.`,
+  }[scenario] || '';
+
+  const systemPrompt = `You are the lifecycle email writer for Academy Sports + Outdoors, a US sporting goods retailer. Write a single, concise, genuinely personalized email. Tone: warm, human, confident — like a helpful store associate, not a marketing blast.
+
+CUSTOMER: ${pName}${customer?.lastName ? ' ' + customer.lastName : ''} (persona: ${persona})
+${historyLines ? `THEIR RECENT ORDERS:\n${historyLines}` : 'No order history available.'}
+${homeStore ? `THEIR STORE: ${homeStore.name} (${homeStore.city})` : ''}
+
+SCENARIO: ${scenarioBrief}
+
+Reference their real purchases naturally where it helps. Keep the body under 130 words. Sign off as "The Academy Sports + Outdoors Team".
+
+Return ONLY valid JSON, no preamble, no markdown fences:
+{ "subject": "...", "text": "plain text body", "html": "<p>...</p> simple HTML body" }`;
+
+  const usingProxy = Boolean(LLM_CONFIG.proxyUrl);
+  if (!LLM_CONFIG.enabled) {
+    return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore });
+  }
+  const url = usingProxy ? LLM_CONFIG.proxyUrl : 'https://api.anthropic.com/v1/messages';
+  const headers = usingProxy
+    ? { 'Content-Type': 'application/json' }
+    : { 'Content-Type': 'application/json', 'x-api-key': LLM_CONFIG.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' };
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: LLM_CONFIG.model,
+        max_tokens: 700,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: 'Write the email now. Return only the JSON.' }],
+      }),
+    });
+    if (!res.ok) return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore });
+    const data = await res.json();
+    const textBlock = (data.content || []).find(b => b.type === 'text')?.text || '';
+    const jsonStr = textBlock.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(jsonStr);
+    if (!parsed.subject || (!parsed.html && !parsed.text)) {
+      return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore });
+    }
+    return parsed;
+  } catch (e) {
+    console.warn('Email draft LLM failed, using fallback:', e.message);
+    return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore });
+  }
+}
+
+// Templated fallback so a flaky LLM never breaks the demo.
+function _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore }) {
+  const sign = '<p>— The Academy Sports + Outdoors Team</p>';
+  const wrap = (subject, body) => ({ subject, html: `${body}${sign}`, text: body.replace(/<[^>]+>/g, '') + '\n— The Academy Sports + Outdoors Team' });
+  switch (scenario) {
+    case 'delay':
+      return wrap(`A quick update on your order`, `<p>Hi ${pName},</p><p>Your recent order is running a little behind — we're sorry for the wait. Your updated delivery date is <strong>${eta}</strong>. To make up for it, your next order ships expedited on us.</p>`);
+    case 'cancel':
+      return wrap(`We've got a great alternative for you`, `<p>Hi ${pName},</p><p>Unfortunately "${focusItem?.title}" sold out before we could ship it. The good news: <strong>${alternate?.name}</strong> ($${alternate?.price?.toFixed(2)}) is in stock and a great match — we can ship it right away. Just reply or tap to swap.</p>`);
+    case 'backInStock':
+      return wrap(`Back in stock at your store`, `<p>Hi ${pName},</p><p>"${focusItem?.title}" is back in stock${homeStore ? ` at ${homeStore.name}` : ''} — grab it before it's gone again.</p>`);
+    case 'winBack':
+      return wrap(`We miss you, ${pName}`, `<p>Hi ${pName},</p><p>It's been a while! Here's 10% off your next order to welcome you back.</p>`);
+    case 'priceDrop':
+      return wrap(`Price drop on something you love`, `<p>Hi ${pName},</p><p>"${focusItem?.title}" just dropped in price — now's a great time to grab another.</p>`);
+    default:
+      return wrap(`An update from Academy`, `<p>Hi ${pName},</p><p>We've got an update on your account.</p>`);
+  }
+}
+
 const CT_CONFIG = {
   // Fill these in to flip to live mode. Leave empty for stub mode (demo-safe).
   authUrl: '',        // e.g. 'https://auth.us-central1.gcp.commercetools.com'
@@ -5780,6 +5952,54 @@ const OrdersPage = () => {
   const personaName = PERSONAS[persona]?.name || 'Your';
   const profile = shopifySession?.profile;
 
+  // Disruption email state: { [orderNumber]: { status: 'sending'|'sent'|'error', scenario, msg } }
+  const [disruption, setDisruption] = useState({});
+
+  const customerZip = shopifySession?.profile?.address?.zip || '77024';
+  const homeStore = zipToStore(customerZip);
+  const recipientEmail = shopifySession?.profile?.email || PERSONAS[persona]?.shopify?.email;
+
+  // Trigger a disruption (delay or cancel) for one order → AI-draft + real send.
+  const triggerDisruption = async (order, scenario) => {
+    if (!recipientEmail) {
+      setDisruption(d => ({ ...d, [order.orderNumber]: { status: 'error', scenario, msg: 'No customer email on file.' } }));
+      return;
+    }
+    setDisruption(d => ({ ...d, [order.orderNumber]: { status: 'sending', scenario } }));
+
+    const focusItem = order.items?.[0] || null;
+    const alternate = scenario === 'cancel' ? pickAlternate(focusItem, CATALOG) : null;
+    const eta = scenario === 'delay' ? reEvaluatedEta(3) : null;
+
+    const email = await draftPersonalizedEmail({
+      scenario,
+      persona,
+      customer: profile,
+      orders: shopifyOrders,
+      focusItem,
+      alternate,
+      eta,
+      homeStore,
+    });
+
+    const sendRes = await sendEmail({
+      to: recipientEmail,
+      subject: email.subject,
+      html: email.html,
+      text: email.text,
+    });
+
+    setDisruption(d => ({
+      ...d,
+      [order.orderNumber]: sendRes.success
+        ? { status: 'sent', scenario, msg: scenario === 'delay'
+            ? `Delay email sent — new ETA ${eta}`
+            : `Cancel email sent — offered ${alternate?.name || 'an alternate'}`,
+            to: recipientEmail }
+        : { status: 'error', scenario, msg: sendRes.error || 'Send failed' },
+    }));
+  };
+
   const fmtDate = (d) => {
     try {
       return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -5936,6 +6156,53 @@ const OrdersPage = () => {
                 </button>
               ))}
             </div>
+
+            {/* Disruption controls — agentic recovery email (delay / cancel) */}
+            <div style={{
+              borderTop: `1px solid ${T.hairline}`, padding: '12px 16px',
+              display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+            }}>
+              {(() => {
+                const d = disruption[order.orderNumber];
+                if (d?.status === 'sending') {
+                  return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: T.cyan, fontSize: 12, fontFamily: T.mono }}>
+                    <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} />
+                    AI drafting {d.scenario === 'delay' ? 'delay' : 'cancellation'} email…
+                  </span>;
+                }
+                if (d?.status === 'sent') {
+                  return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: T.lime, fontSize: 12, fontFamily: T.mono }}>
+                    <Check size={13} strokeWidth={3} /> {d.msg} → {d.to}
+                  </span>;
+                }
+                if (d?.status === 'error') {
+                  return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: T.red, fontSize: 12, fontFamily: T.mono }}>
+                    <X size={13} /> {d.msg}
+                  </span>;
+                }
+                return <>
+                  <span style={{ fontSize: 11, fontFamily: T.mono, color: T.text3, marginRight: 4 }}>Simulate disruption:</span>
+                  <button
+                    onClick={() => triggerDisruption(order, 'delay')}
+                    style={{
+                      background: 'rgba(255,181,71,0.08)', border: `1px solid ${T.amber}44`,
+                      color: T.amber, fontSize: 12, fontWeight: 600, padding: '6px 12px',
+                      borderRadius: 999, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
+                    }}>
+                    <Loader2 size={12} /> Delay
+                  </button>
+                  <button
+                    onClick={() => triggerDisruption(order, 'cancel')}
+                    style={{
+                      background: 'rgba(255,94,122,0.08)', border: `1px solid ${T.red}44`,
+                      color: T.red, fontSize: 12, fontWeight: 600, padding: '6px 12px',
+                      borderRadius: 999, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
+                    }}>
+                    <X size={12} /> Cancel
+                  </button>
+                </>;
+              })()}
+            </div>
           </div>
         ))}
       </div>
@@ -5984,7 +6251,7 @@ function deliveryPromise(inv, homeStore) {
 }
 
 const KitBuilder = () => {
-  const { addToCart, setView, adapterId, shopifySession } = useApp();
+  const { addToCart, setView, adapterId, shopifySession, persona, shopifyOrders } = useApp();
   const [input, setInput] = useState('');
   const [phase, setPhase] = useState('idle'); // idle | thinking | done
   const [thoughts, setThoughts] = useState([]);
@@ -5998,11 +6265,34 @@ const KitBuilder = () => {
   const customerZip = shopifySession?.profile?.address?.zip || '77024';
   const homeStore = zipToStore(customerZip);
 
-  const prompts = [
+  // Persona-aware sample prompts. Each persona shops a distinct world, so the
+  // suggested scenarios should match (Maria → youth team sports, Jake → hunting,
+  // Alex → fitness). Falls back to a broad mix for guest / no persona.
+  const PERSONA_PROMPTS = {
+    hunter: [
+      'plan a weekend deer hunt for two people, budget $800',
+      'cold-weather tree-stand setup for opening morning',
+      'upgrade my optics and range gear for this season',
+    ],
+    parent: [
+      'outfit a youth soccer player starting their first season, kid is 10 years old',
+      'gear up two kids for a weekend basketball tournament',
+      'restock cleats, socks, and a ball for fall season',
+    ],
+    fitness: [
+      'build a home gym starter kit under $500',
+      'marathon training kit — shoes, watch, recovery',
+      'refresh my running gear with the best current deals',
+    ],
+  };
+  const guestPrompts = [
     'plan a weekend deer hunt for two people, budget $800',
     'outfit a youth soccer player starting their first season, kid is 10 years old',
     'beach camping trip for a family of four, three nights',
   ];
+  const personaName = PERSONAS[persona]?.name;
+  const hasSession = (shopifyOrders?.length || 0) > 0 && personaName;
+  const prompts = (persona && PERSONA_PROMPTS[persona]) ? PERSONA_PROMPTS[persona] : guestPrompts;
 
   const findScript = (text) => {
     const t = text.toLowerCase();
@@ -6115,7 +6405,9 @@ const KitBuilder = () => {
         <span style={{ fontStyle: 'italic', color: T.text3 }}>We'll build the kit.</span>
       </h1>
       <p style={{ fontSize: 16, color: T.text2, maxWidth: 620, lineHeight: 1.55 }}>
-        Describe the trip, the event, or the goal. Our agent reasons through your needs, picks SKUs from the live catalog, and assembles a ready-to-cart kit.
+        {hasSession
+          ? <>Describe the trip, the event, or the goal, {personaName}. Our agent reasons through your needs — and your {shopifyOrders.length} past orders — picks SKUs from the live catalog, and assembles a ready-to-cart kit with delivery to your {homeStore.city} store.</>
+          : <>Describe the trip, the event, or the goal. Our agent reasons through your needs, picks SKUs from the live catalog, and assembles a ready-to-cart kit.</>}
       </p>
 
       <div style={{
@@ -6130,7 +6422,7 @@ const KitBuilder = () => {
           value={input}
           onChange={e => setInput(e.target.value)}
           disabled={phase === 'thinking'}
-          placeholder="e.g. plan a weekend deer hunt for two people, budget $800…"
+          placeholder={`e.g. ${prompts[0]}…`}
           style={{
             width: '100%', border: 0, background: 'transparent', resize: 'none',
             fontSize: 17, fontFamily: T.sans, outline: 'none', minHeight: 72,
@@ -6175,7 +6467,9 @@ const KitBuilder = () => {
 
       {phase === 'idle' && (
         <div style={{ marginTop: 36 }}>
-          <div className="mono" style={{ color: T.text3, marginBottom: 16 }}>Sample prompts</div>
+          <div className="mono" style={{ color: T.text3, marginBottom: 16 }}>
+            {hasSession ? `Suggested for ${personaName}` : 'Sample prompts'}
+          </div>
           {prompts.map(p => (
             <button
               key={p}
@@ -6317,6 +6611,159 @@ const KitBuilder = () => {
           </button>
         </motion.div>
       )}
+    </div>
+  );
+};
+
+/* ============================================================================
+   LIFECYCLE & DISRUPTION — admin panel to fire personalized lifecycle emails
+   (delay, cancel, back-in-stock, win-back, price-drop) to the active persona's
+   real inbox via the Worker → Resend. Each email is AI-drafted from the
+   persona's real Shopify order history.
+   ============================================================================ */
+const DisruptionPanel = () => {
+  const { persona, shopifySession, shopifyOrders, adapterId, agentFastForward, setAgentFastForward } = useApp();
+  const [busy, setBusy] = useState(null);     // scenario currently sending
+  const [log, setLog] = useState([]);         // [{ scenario, status, msg, ts }]
+
+  const personaName = PERSONAS[persona]?.name;
+  const profile = shopifySession?.profile;
+  const recipientEmail = profile?.email || PERSONAS[persona]?.shopify?.email;
+  const customerZip = profile?.address?.zip || '77024';
+  const homeStore = zipToStore(customerZip);
+  const liveSession = adapterId === 'shopify' && (shopifyOrders?.length || 0) > 0;
+
+  const SCENARIOS = [
+    { key: 'delay', label: 'Order delayed', desc: 'Re-evaluated ETA + good-will gesture', color: T.amber, icon: <Loader2 size={13} /> },
+    { key: 'cancel', label: 'Order cancelled', desc: 'Proactive in-stock alternative', color: T.red, icon: <X size={13} /> },
+    { key: 'backInStock', label: 'Back in stock', desc: 'Restock nudge for a past purchase', color: T.cyan, icon: <Tag size={13} /> },
+    { key: 'winBack', label: 'Win-back', desc: 'Re-engage a lapsed customer', color: T.violet, icon: <Sparkles size={13} /> },
+    { key: 'priceDrop', label: 'Price drop', desc: 'Alert on a previously-bought item', color: T.lime, icon: <Flame size={13} /> },
+  ];
+
+  const fire = async (scenario) => {
+    if (!recipientEmail) {
+      setLog(l => [{ scenario, status: 'error', msg: 'No customer email on file for this persona.', ts: Date.now() }, ...l]);
+      return;
+    }
+    setBusy(scenario);
+    const focusItem = shopifyOrders?.[0]?.items?.[0] || null;
+    const alternate = scenario === 'cancel' ? pickAlternate(focusItem, CATALOG) : null;
+    const eta = scenario === 'delay' ? reEvaluatedEta(3) : null;
+
+    const email = await draftPersonalizedEmail({
+      scenario, persona, customer: profile, orders: shopifyOrders,
+      focusItem, alternate, eta, homeStore,
+    });
+    const res = await sendEmail({ to: recipientEmail, subject: email.subject, html: email.html, text: email.text });
+    setBusy(null);
+    setLog(l => [{
+      scenario,
+      status: res.success ? 'sent' : 'error',
+      msg: res.success ? `"${email.subject}" → ${recipientEmail}` : (res.error || 'Send failed'),
+      ts: Date.now(),
+    }, ...l].slice(0, 6));
+  };
+
+  return (
+    <div style={{
+      marginTop: 28,
+      background: 'linear-gradient(135deg, rgba(255,94,122,0.05) 0%, rgba(255,181,71,0.04) 100%)',
+      border: `1px solid ${T.amber}33`,
+      borderRadius: 12, overflow: 'hidden',
+    }}>
+      <div style={{
+        padding: '16px 22px', borderBottom: `1px solid ${T.hairline}`,
+        background: `linear-gradient(90deg, ${T.amber}18 0%, transparent 60%)`,
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8,
+      }}>
+        <strong style={{ fontSize: 14, color: T.text, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Sparkles size={14} color={T.amber} />
+          Lifecycle & Disruption — agentic recovery emails
+        </strong>
+        <span className="mono" style={{ color: liveSession ? T.lime : T.text3, fontSize: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: liveSession ? T.lime : T.text3, boxShadow: liveSession ? `0 0 8px ${T.lime}` : 'none' }} />
+          {liveSession ? `LIVE · ${personaName} · ${recipientEmail}` : 'Switch to Shopify + a persona to enable'}
+        </span>
+      </div>
+
+      <div style={{ padding: 22 }}>
+        <p style={{ color: T.text2, fontSize: 13, lineHeight: 1.5, margin: '0 0 18px', maxWidth: 720 }}>
+          Each email is drafted live by the AI from {personaName ? `${personaName}'s` : 'the customer\u2019s'} real order history, then sent to their actual inbox through the secure Worker → Resend. Delay emails include a re-evaluated ETA; cancellations propose an in-stock alternative.
+        </p>
+
+        {/* Autonomous agent fast-forward — compresses the realistic abandoned-cart
+            clock so the always-on agent's escalation is watchable on stage. */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+          background: T.ink2, border: `1px solid ${T.hairline}`, borderRadius: 10,
+          padding: '12px 16px', marginBottom: 18,
+        }}>
+          <span style={{ fontSize: 12, fontFamily: T.mono, color: T.text2, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <Sparkles size={13} color={T.cyan} /> Autonomous cart-recovery agent — clock speed:
+          </span>
+          {[
+            { mult: 1, label: 'Real-time' },
+            { mult: 60, label: '1 min ≈ 1 hr' },
+            { mult: 240, label: '15 sec ≈ 1 hr' },
+          ].map(opt => (
+            <button
+              key={opt.mult}
+              onClick={() => setAgentFastForward(opt.mult)}
+              style={{
+                background: agentFastForward === opt.mult ? T.cyan : 'transparent',
+                color: agentFastForward === opt.mult ? T.void : T.text2,
+                border: `1px solid ${agentFastForward === opt.mult ? T.cyan : T.hairlineStrong}`,
+                padding: '6px 12px', fontSize: 11, fontWeight: 600, borderRadius: 999, cursor: 'pointer',
+              }}>
+              {opt.label}
+            </button>
+          ))}
+          <span style={{ fontSize: 11, color: T.text3, fontFamily: T.mono }}>
+            stage 1 nudge @ {Math.round(30 / agentFastForward * 60)}s · discount @ {Math.round(120 / agentFastForward * 60)}s after add-to-cart
+          </span>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
+          {SCENARIOS.map(s => (
+            <button
+              key={s.key}
+              onClick={() => fire(s.key)}
+              disabled={!liveSession || busy != null}
+              style={{
+                textAlign: 'left', background: T.ink2,
+                border: `1px solid ${liveSession ? s.color + '44' : T.hairline}`,
+                borderRadius: 10, padding: '14px 16px',
+                cursor: liveSession && busy == null ? 'pointer' : 'not-allowed',
+                opacity: liveSession ? 1 : 0.5, transition: 'all 0.2s',
+              }}
+              onMouseEnter={e => { if (liveSession && busy == null) { e.currentTarget.style.borderColor = s.color; e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; } }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = liveSession ? s.color + '44' : T.hairline; e.currentTarget.style.background = T.ink2; }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: s.color, fontWeight: 700, fontSize: 13, marginBottom: 4 }}>
+                {busy === s.key ? <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} /> : s.icon}
+                {s.label}
+              </div>
+              <div style={{ color: T.text3, fontSize: 11 }}>{s.desc}</div>
+            </button>
+          ))}
+        </div>
+
+        {log.length > 0 && (
+          <div style={{ marginTop: 18, borderTop: `1px solid ${T.hairline}`, paddingTop: 14 }}>
+            <div className="mono" style={{ color: T.text3, fontSize: 10, marginBottom: 8 }}>Recent sends</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {log.map((e, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontFamily: T.mono, color: e.status === 'sent' ? T.lime : T.red }}>
+                  {e.status === 'sent' ? <Check size={12} strokeWidth={3} /> : <X size={12} />}
+                  <span style={{ color: T.text3 }}>{SCENARIOS.find(s => s.key === e.scenario)?.label}:</span>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.msg}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 };
@@ -7021,6 +7468,8 @@ const MerchTool = () => {
       </div>
 
       {/* ---------- ADMIN AI ASSISTANT ---------- */}
+      <DisruptionPanel />
+
       <AdminAssistant
         rules={rules}
         pinnedByCategory={pinnedByCategory}
@@ -7473,13 +7922,17 @@ const AdminAssistant = ({ rules, pinnedByCategory, pdpOverrides, onApply, llmEna
    CART (minimal — for demo flow continuity)
    ============================================================================ */
 const CartPage = () => {
-  const { cart, setView, shouldCheckout, clearCart } = useApp();
+  const { cart, setView, shouldCheckout, clearCart, markConverted, cartDiscounts } = useApp();
   const [placed, setPlaced] = useState(false);
   // Snapshot the cart at the moment of placement so the confirmation page
   // can still show "you bought X items" even after we clear the live cart.
   const [placedSnapshot, setPlacedSnapshot] = useState(null);
 
-  const total = cart.reduce((s, i) => s + i.product.price * i.qty, 0);
+  // Apply any agent-granted discounts (from accepted email offers) per line.
+  const lineNet = (i) => i.product.price * i.qty * (1 - (cartDiscounts?.[i.product?.id] || 0));
+  const subtotal = cart.reduce((s, i) => s + i.product.price * i.qty, 0);
+  const total = cart.reduce((s, i) => s + lineNet(i), 0);
+  const discountTotal = subtotal - total;
 
   // If chat asked us to checkout and cart isn't empty, auto-place after a beat
   useEffect(() => {
@@ -7487,11 +7940,12 @@ const CartPage = () => {
       const t = setTimeout(() => {
         setPlacedSnapshot({ items: cart.length, total });
         setPlaced(true);
+        if (typeof markConverted === 'function') markConverted();  // agent: stop escalating
         clearCart();   // empty the live cart after capturing snapshot
       }, 900);
       return () => clearTimeout(t);
     }
-  }, [shouldCheckout, cart.length, placed, total, clearCart]);
+  }, [shouldCheckout, cart.length, placed, total, clearCart, markConverted]);
 
   if (placed) {
     const items = placedSnapshot?.items ?? 0;
@@ -7572,7 +8026,6 @@ const CartPage = () => {
             </div>
           ))}
           <div style={{
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
             marginTop: 24, padding: 22,
             background: 'linear-gradient(135deg, rgba(157,92,255,0.10) 0%, rgba(255,77,158,0.06) 100%)',
             backdropFilter: 'blur(20px)',
@@ -7582,13 +8035,22 @@ const CartPage = () => {
             borderRadius: 12,
             boxShadow: `0 8px 32px ${T.violet}22`,
           }}>
-            <span className="mono" style={{ color: T.violet }}>Subtotal</span>
-            <span style={{ fontSize: 24, fontWeight: 700, color: T.text }}>${total.toFixed(2)}</span>
+            {discountTotal > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, color: T.lime, fontSize: 13, fontFamily: T.mono }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Tag size={13} /> Agent offer applied (10% off)</span>
+                <span>− ${discountTotal.toFixed(2)}</span>
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span className="mono" style={{ color: T.violet }}>{discountTotal > 0 ? 'Total' : 'Subtotal'}</span>
+              <span style={{ fontSize: 24, fontWeight: 700, color: T.text }}>${total.toFixed(2)}</span>
+            </div>
           </div>
           <button
             onClick={() => {
               setPlacedSnapshot({ items: cart.length, total });
               setPlaced(true);
+              if (typeof markConverted === 'function') markConverted();
               clearCart();
             }}
             style={{
@@ -7904,6 +8366,163 @@ const AccessDenied = () => {
   );
 };
 
+/* ============================================================================
+   LIFECYCLE AGENT (browser) — the autonomous, always-watching agent.
+   Polls on an interval; detects abandoned-cart items and escalates:
+     stage1 (highlights + reviews) → stage2 (time-boxed discount w/ accept link)
+   Detects conversion (checkout) and email-link acceptance (via KV), and
+   changes behavior: stops escalating, applies the discount in-app.
+   Syncs state to the Worker KV so the cron agent can carry on after tab close.
+   Runs silently (no shopper-visible UI); admin controls timing via fastForward.
+   ============================================================================ */
+// Base (realistic) escalation thresholds in ms. fastForward divides these.
+const AGENT_STAGE1_MS = 30 * 60 * 1000;   // 30 min → highlights email
+const AGENT_STAGE2_MS = 2 * 60 * 60 * 1000; // 2 hr → discount email
+const AGENT_POLL_MS = 5000;                // poll cadence
+
+function useLifecycleAgent({ enabled, agentKey, cart, persona, profile, orders, converted, fastForward, onApplyDiscount }) {
+  // Per-item escalation state lives in a ref (no re-render churn from the loop).
+  const stateRef = useRef({});   // { [productId]: { addedAt, stage, lastEmailAt } }
+  const acceptedRef = useRef({}); // { [productId]: true } once accepted via link
+  const lastSyncRef = useRef(0);
+
+  useEffect(() => {
+    if (!enabled || !agentKey) return;
+    let cancelled = false;
+    const ff = Math.max(1, fastForward || 1);
+    const stage1 = AGENT_STAGE1_MS / ff;
+    const stage2 = AGENT_STAGE2_MS / ff;
+
+    const tick = async () => {
+      if (cancelled) return;
+      const now = Date.now();
+      const lines = cart || [];
+
+      // Conversion: cart emptied after having items, or explicit converted flag.
+      if (converted) {
+        // Mark all tracked items converted; sync; stop escalating.
+        Object.keys(stateRef.current).forEach(id => { stateRef.current[id].stage = 'converted'; });
+        await agentSyncState({ key: agentKey, cart: [], converted: true, lastPurchaseAt: now });
+        return;
+      }
+
+      // Sync cart snapshot to KV periodically (so the cron agent can continue).
+      if (now - lastSyncRef.current > 15000) {
+        lastSyncRef.current = now;
+        agentSyncState({
+          key: agentKey,
+          cart: lines.map(l => ({ id: l.product?.id, title: l.product?.name, price: l.product?.price, addedAt: l.addedAt || now })),
+          converted: false,
+        });
+        // Poll KV for email-link acceptance → apply discount in-app.
+        const remote = await agentReadState(agentKey);
+        if (remote?.items) {
+          for (const [id, st] of Object.entries(remote.items)) {
+            if (st.acceptedAt && !acceptedRef.current[id]) {
+              acceptedRef.current[id] = true;
+              if (typeof onApplyDiscount === 'function') onApplyDiscount(id, 0.10);
+            }
+          }
+        }
+      }
+
+      // Escalation per cart line.
+      for (const line of lines) {
+        const id = line.product?.id;
+        if (!id) continue;
+        const addedAt = line.addedAt || now;
+        const age = now - addedAt;
+        const st = stateRef.current[id] || (stateRef.current[id] = { addedAt, stage: 'none', lastEmailAt: 0 });
+        if (acceptedRef.current[id] || st.stage === 'converted' || st.stage === 'stage2') continue;
+
+        const recipient = profile?.email || PERSONAS[persona]?.shopify?.email;
+        if (!recipient) continue;
+
+        // Stage 2: discount email with accept link.
+        if (age >= stage2 && st.stage === 'stage1') {
+          const acceptLink = agentAcceptUrl(agentKey, id);
+          const email = await draftAbandonEmail({ stage: 2, persona, profile, item: line.product, orders, acceptLink });
+          const res = await sendEmail({ to: recipient, subject: email.subject, html: email.html, text: email.text });
+          if (res.success) { st.stage = 'stage2'; st.lastEmailAt = now; }
+        // Stage 1: highlights + reviews.
+        } else if (age >= stage1 && st.stage === 'none') {
+          const email = await draftAbandonEmail({ stage: 1, persona, profile, item: line.product, orders });
+          const res = await sendEmail({ to: recipient, subject: email.subject, html: email.html, text: email.text });
+          if (res.success) { st.stage = 'stage1'; st.lastEmailAt = now; }
+        }
+      }
+    };
+
+    const iv = setInterval(tick, AGENT_POLL_MS);
+    tick();
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [enabled, agentKey, cart, persona, profile, converted, fastForward, orders, onApplyDiscount]);
+}
+
+// Draft an abandoned-cart email (stage 1 = highlights/reviews, stage 2 = discount).
+async function draftAbandonEmail({ stage, persona, profile, item, orders, acceptLink }) {
+  const pName = profile?.firstName || PERSONAS[persona]?.name || 'there';
+  const brief = stage === 2
+    ? `${pName} left "${item?.name}" ($${item?.price?.toFixed(2)}) in their cart and hasn't checked out. Offer 10% off if they complete in the next 30 minutes. Include this exact call-to-action link as an HTML anchor labelled "Apply my 10% discount": ${acceptLink}. Create gentle urgency.`
+    : `${pName} added "${item?.name}" ($${item?.price?.toFixed(2)}) to their cart but hasn't checked out. Write a warm nudge highlighting why it's a great pick — quality, popularity, and 2-3 short, realistic-sounding customer review snippets (invent plausible first-name + star sentiment, keep each under 12 words). No discount yet.`;
+
+  const systemPrompt = `You write a single abandoned-cart email for Academy Sports + Outdoors. Warm, human, concise (under 130 words). Sign off "The Academy Sports + Outdoors Team".
+CUSTOMER: ${pName} (persona ${persona}).
+TASK: ${brief}
+Return ONLY JSON, no fences: { "subject": "...", "text": "...", "html": "<p>...</p>" }${acceptLink ? `\nThe html MUST contain an <a href="${acceptLink}">…</a> anchor.` : ''}`;
+
+  if (!LLM_CONFIG.enabled) {
+    // Fallback templates.
+    if (stage === 2) {
+      return {
+        subject: `Your ${item?.name} — 10% off if you finish now`,
+        html: `<p>Hi ${pName},</p><p>Your <strong>${item?.name}</strong> is still waiting. Here's <strong>10% off</strong> if you complete your order in the next 30 minutes.</p><p><a href="${acceptLink}">Apply my 10% discount →</a></p><p>— The Academy Sports + Outdoors Team</p>`,
+        text: `Hi ${pName}, your ${item?.name} is still in your cart. 10% off if you finish in 30 min: ${acceptLink}`,
+      };
+    }
+    return {
+      subject: `Still eyeing the ${item?.name}?`,
+      html: `<p>Hi ${pName},</p><p>You left the <strong>${item?.name}</strong> in your cart — one of our top-rated picks. Shoppers love it for quality and value.</p><p>"Exactly what I needed." — Sam ★★★★★<br>"Great value, fast delivery." — Dana ★★★★★</p><p>— The Academy Sports + Outdoors Team</p>`,
+      text: `Hi ${pName}, you left the ${item?.name} in your cart — a top-rated pick.`,
+    };
+  }
+
+  const usingProxy = Boolean(LLM_CONFIG.proxyUrl);
+  const url = usingProxy ? LLM_CONFIG.proxyUrl : 'https://api.anthropic.com/v1/messages';
+  const headers = usingProxy
+    ? { 'Content-Type': 'application/json' }
+    : { 'Content-Type': 'application/json', 'x-api-key': LLM_CONFIG.apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' };
+  try {
+    const res = await fetch(url, {
+      method: 'POST', headers,
+      body: JSON.stringify({ model: LLM_CONFIG.model, max_tokens: 700, system: systemPrompt, messages: [{ role: 'user', content: 'Write it now. JSON only.' }] }),
+    });
+    if (!res.ok) throw new Error('llm http ' + res.status);
+    const data = await res.json();
+    const txt = (data.content || []).find(b => b.type === 'text')?.text || '';
+    const parsed = JSON.parse(txt.replace(/```json|```/g, '').trim());
+    // Guarantee the accept link is present in stage-2 html.
+    if (stage === 2 && acceptLink && !(parsed.html || '').includes(acceptLink)) {
+      parsed.html = (parsed.html || '') + `<p><a href="${acceptLink}">Apply my 10% discount →</a></p>`;
+    }
+    return parsed;
+  } catch {
+    // LLM failed — return a safe template (no recursion).
+    if (stage === 2) {
+      return {
+        subject: `Your ${item?.name} — 10% off if you finish now`,
+        html: `<p>Hi ${pName},</p><p>Your <strong>${item?.name}</strong> is still waiting. Here's <strong>10% off</strong> if you complete your order in the next 30 minutes.</p><p><a href="${acceptLink}">Apply my 10% discount →</a></p><p>— The Academy Sports + Outdoors Team</p>`,
+        text: `Hi ${pName}, your ${item?.name} is still in your cart. 10% off if you finish in 30 min: ${acceptLink}`,
+      };
+    }
+    return {
+      subject: `Still eyeing the ${item?.name}?`,
+      html: `<p>Hi ${pName},</p><p>You left the <strong>${item?.name}</strong> in your cart — one of our top-rated picks.</p><p>— The Academy Sports + Outdoors Team</p>`,
+      text: `Hi ${pName}, you left the ${item?.name} in your cart.`,
+    };
+  }
+}
+
 export default function App() {
   // Auth — restored from localStorage so refresh doesn't kick you out mid-demo
   const [user, setUser] = useState(() => loadStoredUser());
@@ -7925,6 +8544,14 @@ export default function App() {
   const [shopifySession, setShopifySession] = useState(null);   // { token, profile }
   const [shopifyOrders, setShopifyOrders] = useState([]);
   const [shopifyLoading, setShopifyLoading] = useState(false);
+
+  // Lifecycle agent controls. agentFastForward compresses the realistic
+  // escalation clock for live demos (1 = real time; 240 = 1 min ≈ 4 hrs).
+  // agentConverted flips true when a checkout completes so the agent stops.
+  // cartDiscounts: { [productId]: rate } applied when an email offer is accepted.
+  const [agentFastForward, setAgentFastForward] = useState(1);
+  const [agentConverted, setAgentConverted] = useState(false);
+  const [cartDiscounts, setCartDiscounts] = useState({});
 
   // Merchandising overrides — set by the Merch Tool admin, consumed by the
   // storefront. In-memory only (resets on page refresh) so a demo gone wrong
@@ -8042,6 +8669,34 @@ export default function App() {
     return () => { cancelled = true; };
   }, [persona, adapterId]);
 
+  // ---- Lifecycle agent wiring -------------------------------------------
+  // The agent key is the persona's real email (the inbox we send to + the KV
+  // document id). Agent runs only with a live Shopify session (real email on
+  // file). Discount acceptance (via email link) applies a cart discount in-app.
+  const agentKey = shopifySession?.profile?.email || PERSONAS[persona]?.shopify?.email || null;
+  const agentEnabled = adapterId === 'shopify' && Boolean(agentKey);
+
+  const applyCartDiscount = useCallback((productId, rate) => {
+    setCartDiscounts(d => (d[productId] === rate ? d : { ...d, [productId]: rate }));
+  }, []);
+
+  // Reset conversion flag whenever a new item is added (a fresh shopping session).
+  useEffect(() => {
+    if (cart.length > 0 && agentConverted) setAgentConverted(false);
+  }, [cart.length]); // eslint-disable-line
+
+  useLifecycleAgent({
+    enabled: agentEnabled,
+    agentKey,
+    cart,
+    persona,
+    profile: shopifySession?.profile,
+    orders: shopifyOrders,
+    converted: agentConverted,
+    fastForward: agentFastForward,
+    onApplyDiscount: applyCartDiscount,
+  });
+
   const addToCart = (product, qty = 1) => {
     if (!product) return;
     setCart(c => {
@@ -8051,7 +8706,8 @@ export default function App() {
       if (existingIdx >= 0) {
         return c.map((line, i) => i === existingIdx ? { ...line, qty: line.qty + qty } : line);
       }
-      return [...c, { product, qty }];
+      // addedAt timestamps the line so the lifecycle agent can detect abandonment.
+      return [...c, { product, qty, addedAt: Date.now() }];
     });
   };
 
@@ -8181,6 +8837,10 @@ export default function App() {
     pinnedByCategory, setPinnedByCategory,
     // Shopify customer session (live order history for the active persona)
     shopifySession, shopifyOrders, shopifyLoading,
+    // Lifecycle agent
+    agentFastForward, setAgentFastForward,
+    cartDiscounts,
+    markConverted: () => setAgentConverted(true),
   };
 
   const adapterDesc = ADAPTER_DESCRIBE[adapterId];
