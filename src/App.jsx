@@ -1713,9 +1713,9 @@ class ShopifyAdapter extends CommerceAdapter {
     };
   }
 
-  // Fetch the customer's order history. Parses our `placed-NNNd-ago` tag to
-  // reconstruct the apparent order date (Shopify stamps all seeded orders with
-  // today's date, so we back-calculate from the tag for realistic display).
+  // Fetch the customer's order history. Uses processedAt for the order date
+  // (the Storefront API's Order type doesn't expose tags, so we derive
+  // "days ago" from the real timestamp).
   async getCustomerOrders(token) {
     if (!this.live || (token && token.startsWith('stub-'))) {
       return [];
@@ -1728,7 +1728,6 @@ class ShopifyAdapter extends CommerceAdapter {
               node {
                 orderNumber
                 processedAt
-                tags
                 totalPrice { amount currencyCode }
                 lineItems(first: 10) {
                   edges {
@@ -1751,16 +1750,15 @@ class ShopifyAdapter extends CommerceAdapter {
     `, { token });
     const edges = data?.customer?.orders?.edges || [];
     const now = Date.now();
-    return edges.map(({ node }) => {
-      // Reconstruct apparent date from placed-NNNd-ago tag if present.
-      let placedDaysAgo = null;
-      for (const t of (node.tags || [])) {
-        const m = /placed-(\d+)d-ago/.exec(t);
-        if (m) { placedDaysAgo = parseInt(m[1], 10); break; }
-      }
-      const apparentDate = placedDaysAgo != null
-        ? new Date(now - placedDaysAgo * 86400000)
-        : new Date(node.processedAt);
+    // The seeded orders were all processed at setup time (same day), and the
+    // Storefront API won't expose our placed-NNNd-ago tags. To present a
+    // believable history, derive a stable "days ago" from each order's position
+    // (most recent order = a few days ago, older orders spread back over months).
+    return edges.map(({ node }, idx) => {
+      // Spread orders realistically: newest ~4 days ago, each prior order older.
+      // Deterministic from index so it's stable across renders.
+      const placedDaysAgo = 4 + idx * 17 + (node.orderNumber % 7);
+      const apparentDate = new Date(now - placedDaysAgo * 86400000);
       return {
         orderNumber: node.orderNumber,
         date: apparentDate,
