@@ -1058,7 +1058,7 @@ async function sendEmail({ to, subject, html, text }) {
   // lifecycle/disruption emails actually arrive. Redirected to the Resend account
   // owner's verified address so the free tier delivers them.
   // REMOVE this line once a domain is verified in Resend + RESEND_FROM is set.
-  to = 'anant.2.singh@coforge.com';
+  to = 'anant.jadon25@gmail.com';
 
   if (!LLM_CONFIG.proxyUrl) {
     return { success: false, error: 'No proxy configured — email requires the Cloudflare Worker.' };
