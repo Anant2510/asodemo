@@ -2041,7 +2041,7 @@ const ADAPTERS = {
 };
 
 // Mutable singleton. Components read via the AdapterContext below.
-let adapter = ADAPTERS.mock;
+let adapter = ADAPTERS.shopify;   // DEMO DEFAULT: start on live Shopify (was ADAPTERS.mock)
 const ADAPTER_DESCRIBE = {
   mock: { name: 'MockAdapter', mode: 'DEMO', backend: 'In-memory catalog', latency: '~250–350ms' },
   commercetools: ADAPTERS.commercetools.describe(),
@@ -7929,7 +7929,7 @@ const AdminAssistant = ({ rules, pinnedByCategory, pdpOverrides, onApply, llmEna
    CART (minimal — for demo flow continuity)
    ============================================================================ */
 const CartPage = () => {
-  const { cart, setView, shouldCheckout, clearCart, markConverted, cartDiscounts } = useApp();
+  const { cart, setView, shouldCheckout, clearCart, markConverted, cartDiscounts, agentKey, agentEnabled, applyCartDiscount } = useApp();
   const [placed, setPlaced] = useState(false);
   // Snapshot the cart at the moment of placement so the confirmation page
   // can still show "you bought X items" even after we clear the live cart.
@@ -7940,6 +7940,24 @@ const CartPage = () => {
   const subtotal = cart.reduce((s, i) => s + i.product.price * i.qty, 0);
   const total = cart.reduce((s, i) => s + lineNet(i), 0);
   const discountTotal = subtotal - total;
+
+  // Discount feels instant: on landing (e.g. returning from the email accept
+  // page), immediately read the agent's KV state and apply any already-accepted
+  // offer, rather than waiting for the lifecycle agent's next 15s poll.
+  useEffect(() => {
+    if (!agentEnabled || !agentKey) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const remote = await agentReadState(agentKey);
+        if (cancelled || !remote?.items) return;
+        for (const [id, st] of Object.entries(remote.items)) {
+          if (st?.acceptedAt && typeof applyCartDiscount === 'function') applyCartDiscount(id, 0.10);
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [agentKey, agentEnabled, applyCartDiscount]);
 
   // If chat asked us to checkout and cart isn't empty, auto-place after a beat
   useEffect(() => {
@@ -8546,7 +8564,7 @@ export default function App() {
       return raw ? JSON.parse(raw) : [];
     } catch { return []; }
   });
-  const [adapterId, setAdapterIdState] = useState('mock');
+  const [adapterId, setAdapterIdState] = useState('shopify');   // DEMO DEFAULT: live Shopify (was 'mock')
   const [llmEnabled, setLlmEnabled] = useState(LLM_CONFIG.enabled);
   const [pendingFilter, setPendingFilter] = useState(null);   // signals CategoryPage to apply a facet
   const [shouldCheckout, setShouldCheckout] = useState(false);
@@ -8878,6 +8896,7 @@ export default function App() {
     // Lifecycle agent
     agentFastForward, setAgentFastForward,
     cartDiscounts,
+    agentKey, agentEnabled, applyCartDiscount,
     markConverted: () => setAgentConverted(true),
   };
 
