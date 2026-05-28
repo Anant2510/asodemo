@@ -4376,6 +4376,15 @@ const PersonaModuleProducts = ({ ids }) => {
    adapter. Includes shortcuts for the locked stage queries and kit builder.
    ============================================================================ */
 
+// Trim a product title to a short, chip-friendly phrase (first 2-3 meaningful words).
+function shortName(title) {
+  if (!title) return 'gear';
+  const words = title.split(/\s+/).filter(Boolean);
+  // Drop a leading brand-ish word if the title is long, keep it readable.
+  const core = words.slice(0, 3).join(' ');
+  return core.length > 28 ? words.slice(0, 2).join(' ') : core;
+}
+
 const CHAT_SUGGESTIONS = [
   { label: 'Find me a beginner crossbow under $400', icon: <Target size={12} /> },
   { label: 'Running shoes for flat feet', icon: <Zap size={12} /> },
@@ -4387,9 +4396,63 @@ const CHAT_SUGGESTIONS = [
 
 const ChatWidget = () => {
   const { setView, setActiveProduct, persona, view, cart, addToCart, executeActions, llmEnabled, chatOpen: open, setChatOpen: setOpen, shopifyOrders } = useApp();
+
+  // Personalize the welcome + suggestion chips from the persona's real Shopify
+  // order history (when a live session is loaded). Falls back to the generic
+  // greeting + default chips on Mock / guest / before the session resolves.
+  const { welcomeText, chips } = useMemo(() => {
+    const orders = shopifyOrders || [];
+    const pName = PERSONAS[persona]?.name;
+    if (orders.length === 0 || !pName) {
+      return {
+        welcomeText: "Hi — I'm your AI shopping assistant. Ask me anything in plain English — I can find products, open pages, add to cart, even check you out. Try the suggestions below.",
+        chips: CHAT_SUGGESTIONS,
+      };
+    }
+    // Gather recent purchases for a tailored greeting.
+    const allItems = orders.flatMap(o => o.items.map(i => ({ ...i, daysAgo: o.daysAgo })));
+    const recent = allItems[0];
+    const itemCount = orders.reduce((s, o) => s + o.items.reduce((n, i) => n + (i.quantity || 1), 0), 0);
+    const lifetime = orders.reduce((s, o) => s + (o.total || 0), 0);
+
+    const welcome = `Welcome back, ${pName}. I can see your ${orders.length} past orders (${itemCount} items, $${lifetime.toFixed(2)} lifetime)${recent ? ` — most recently the ${recent.title}` : ''}. Ask me what pairs with your gear, what to restock, or what's next.`;
+
+    // Build personalized chips grounded in real purchases.
+    const personalChips = [];
+    if (recent) {
+      personalChips.push({ label: `What pairs with my ${shortName(recent.title)}?`, icon: <Sparkles size={12} /> });
+    }
+    personalChips.push({ label: 'What should I buy next based on my orders?', icon: <Target size={12} /> });
+    // Category-aware follow-up from their most-bought category.
+    const catCount = {};
+    allItems.forEach(i => { if (i.category) catCount[i.category] = (catCount[i.category] || 0) + 1; });
+    const topCat = Object.keys(catCount).sort((a, b) => catCount[b] - catCount[a])[0];
+    if (topCat) {
+      personalChips.push({ label: `Show me new ${topCat.replace('-', ' ')} arrivals`, icon: <Flame size={12} /> });
+    }
+    if (allItems.length > 1) {
+      const second = allItems[1];
+      personalChips.push({ label: `Restock my ${shortName(second.title)}`, icon: <ShoppingCart size={12} /> });
+    }
+    personalChips.push({ label: 'Take me to checkout', icon: <ArrowRight size={12} /> });
+    return { welcomeText: welcome, chips: personalChips.slice(0, 5) };
+  }, [shopifyOrders, persona]);
+
   const [messages, setMessages] = useState([
-    { role: 'assistant', kind: 'welcome', text: "Hi — I'm your AI shopping assistant. Ask me anything in plain English — I can find products, open pages, add to cart, even check you out. Try the suggestions below." },
+    { role: 'assistant', kind: 'welcome', text: welcomeText },
   ]);
+
+  // Keep the welcome message in sync once the Shopify session loads (the
+  // initial state is captured at mount, before orders may have arrived). Only
+  // updates while the chat is still fresh (single welcome message, untouched).
+  useEffect(() => {
+    setMessages(prev => {
+      if (prev.length === 1 && prev[0].kind === 'welcome' && prev[0].text !== welcomeText) {
+        return [{ role: 'assistant', kind: 'welcome', text: welcomeText }];
+      }
+      return prev;
+    });
+  }, [welcomeText]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [visualOpen, setVisualOpen] = useState(false);
@@ -4777,9 +4840,11 @@ const ChatWidget = () => {
               {/* Quick-start suggestions (only when chat is fresh) */}
               {messages.length === 1 && !loading && (
                 <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} style={{ marginTop: 6 }}>
-                  <div className="mono" style={{ color: T.text3, marginBottom: 10, fontSize: 9 }}>Try asking</div>
+                  <div className="mono" style={{ color: T.text3, marginBottom: 10, fontSize: 9 }}>
+                    {(shopifyOrders?.length || 0) > 0 ? 'Suggested for you' : 'Try asking'}
+                  </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {CHAT_SUGGESTIONS.map(s => (
+                    {chips.map(s => (
                       <button
                         key={s.label}
                         onClick={() => sendMessage(s.label)}
