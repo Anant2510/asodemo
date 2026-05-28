@@ -1055,10 +1055,10 @@ RULES:
 async function sendEmail({ to, subject, html, text }) {
   // DEMO FALLBACK: Resend free tier (onboarding@resend.dev sender, no verified
   // domain) only delivers to the account owner. Redirect all sends there so the
-  // lifecycle/disruption emails actually arrive (lands in anant.jadon25@gmail.com,
-  // the same inbox the +jake / +alex aliases resolve to anyway).
+  // lifecycle/disruption emails actually arrive. Redirected to the Resend account
+  // owner's verified address so the free tier delivers them.
   // REMOVE this line once a domain is verified in Resend + RESEND_FROM is set.
-  to = 'anant.jadon25@gmail.com';
+  to = 'anant.2.singh@coforge.com';
 
   if (!LLM_CONFIG.proxyUrl) {
     return { success: false, error: 'No proxy configured — email requires the Cloudflare Worker.' };
@@ -8530,13 +8530,22 @@ Return ONLY JSON, no fences: { "subject": "...", "text": "...", "html": "<p>...<
   }
 }
 
+// Per-persona cart persistence key. Each persona keeps its own cart so switching
+// personas (and the email -> accept-page -> return round-trip) doesn't bleed carts.
+const cartStorageKey = (p) => `aso_cart_${p || 'guest'}`;
+
 export default function App() {
   // Auth — restored from localStorage so refresh doesn't kick you out mid-demo
   const [user, setUser] = useState(() => loadStoredUser());
   const [persona, setPersona] = useState(() => loadStoredUser()?.persona || 'hunter');
   const [view, setView] = useState('home');
   const [activeProduct, setActiveProduct] = useState(null);
-  const [cart, setCart] = useState([]);
+  const [cart, setCart] = useState(() => {
+    try {
+      const raw = localStorage.getItem(cartStorageKey(loadStoredUser()?.persona || 'hunter'));
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  });
   const [adapterId, setAdapterIdState] = useState('mock');
   const [llmEnabled, setLlmEnabled] = useState(LLM_CONFIG.enabled);
   const [pendingFilter, setPendingFilter] = useState(null);   // signals CategoryPage to apply a facet
@@ -8559,6 +8568,28 @@ export default function App() {
   const [agentFastForward, setAgentFastForward] = useState(1);
   const [agentConverted, setAgentConverted] = useState(false);
   const [cartDiscounts, setCartDiscounts] = useState({});
+
+  // --- Per-persona cart persistence -----------------------------------------
+  // Cart used to be in-memory only, so the email -> accept-page -> return
+  // round-trip wiped it. We now persist each persona's cart under its own
+  // localStorage key, restore it on load (see the useState initializer above),
+  // swap carts when the persona changes, and save on every change.
+  // cartOwnerRef tracks which persona the in-state cart belongs to, so a persona
+  // switch can never write the wrong cart into the wrong key.
+  const cartOwnerRef = useRef(persona);
+  useEffect(() => {
+    if (cartOwnerRef.current === persona) return;   // mount / no real change
+    cartOwnerRef.current = persona;
+    let loaded = [];
+    try {
+      const raw = localStorage.getItem(cartStorageKey(persona));
+      loaded = raw ? JSON.parse(raw) : [];
+    } catch { loaded = []; }
+    setCart(loaded);
+  }, [persona]);
+  useEffect(() => {
+    try { localStorage.setItem(cartStorageKey(cartOwnerRef.current), JSON.stringify(cart)); } catch {}
+  }, [cart]);
 
   // Merchandising overrides — set by the Merch Tool admin, consumed by the
   // storefront. In-memory only (resets on page refresh) so a demo gone wrong
