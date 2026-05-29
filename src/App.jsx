@@ -8198,7 +8198,7 @@ const AdminAssistant = ({ rules, pinnedByCategory, pdpOverrides, onApply, llmEna
    CART (minimal — for demo flow continuity)
    ============================================================================ */
 const CartPage = () => {
-  const { cart, setView, shouldCheckout, clearCart, markConverted, cartDiscounts, agentKey, agentEnabled, applyCartDiscount, adapterId, refreshShopifyOrders } = useApp();
+  const { cart, setView, shouldCheckout, clearCart, markConverted, cartDiscounts, agentKey, agentEnabled, applyCartDiscount, adapterId, refreshShopifyOrders, removeFromCart } = useApp();
   const [placed, setPlaced] = useState(false);
   // Snapshot the cart at the moment of placement so the confirmation page
   // can still show "you bought X items" even after we clear the live cart.
@@ -8335,7 +8335,7 @@ const CartPage = () => {
         <>
           {cart.map((item, i) => (
             <div key={i} style={{
-              display: 'grid', gridTemplateColumns: '80px 1fr auto', gap: 18,
+              display: 'grid', gridTemplateColumns: '80px 1fr auto auto', gap: 18,
               padding: 18,
               background: 'linear-gradient(135deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.02) 100%)',
               backdropFilter: 'blur(20px)',
@@ -8353,6 +8353,34 @@ const CartPage = () => {
                 <div style={{ fontWeight: 600, fontSize: 15, color: T.text }}>{item.product.name}</div>
               </div>
               <div style={{ fontWeight: 700, fontSize: 16, color: T.text }}>${(item.product.price * item.qty).toFixed(2)}</div>
+              {/* Per-line remove — subtle by default, red on hover to signal destructive action. */}
+              <button
+                onClick={() => removeFromCart(item.product.id)}
+                aria-label={`Remove ${item.product.name} from cart`}
+                title="Remove from cart"
+                style={{
+                  width: 36, height: 36, padding: 0,
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'transparent',
+                  color: T.text3,
+                  border: `1px solid ${T.hairline}`,
+                  borderRadius: 999,
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease',
+                }}
+                onMouseEnter={e => {
+                  e.currentTarget.style.color = T.red;
+                  e.currentTarget.style.borderColor = `${T.red}55`;
+                  e.currentTarget.style.background = `${T.red}11`;
+                }}
+                onMouseLeave={e => {
+                  e.currentTarget.style.color = T.text3;
+                  e.currentTarget.style.borderColor = T.hairline;
+                  e.currentTarget.style.background = 'transparent';
+                }}
+              >
+                <X size={16} strokeWidth={2.5} />
+              </button>
             </div>
           ))}
           <div style={{
