@@ -1250,7 +1250,7 @@ Return ONLY valid JSON, no preamble, no markdown fences:
     // For delay-with-alternate: append a CTA button to the LLM-drafted HTML.
     // We don't trust the LLM to format the swap URL exactly right, so we own this.
     if (acceptSwapUrl && alternate) {
-      const cta = `<p style="margin-top:24px"><a href="${acceptSwapUrl}" style="display:inline-block;padding:14px 28px;background:#22d3ee;color:#0a0a0f;border-radius:999px;text-decoration:none;font-weight:700">Accept the alternate — ship now</a></p><p style="color:#888;font-size:12px;margin-top:8px">Clicking the button cancels the delayed order and ships ${alternate.name} right away.</p>`;
+      const cta = `<p style="margin-top:24px"><a href="${acceptSwapUrl}" style="display:inline-block;padding:14px 28px;background:#2563eb;color:#0a0a0f;border-radius:999px;text-decoration:none;font-weight:700">Accept the alternate — ship now</a></p><p style="color:#888;font-size:12px;margin-top:8px">Clicking the button cancels the delayed order and ships ${alternate.name} right away.</p>`;
       parsed.html = (parsed.html || '') + cta;
       parsed.text = (parsed.text || '') + `\n\nAccept the alternate (${alternate.name}) and we will cancel the delayed order: ${acceptSwapUrl}`;
     }
@@ -1265,7 +1265,7 @@ Return ONLY valid JSON, no preamble, no markdown fences:
 function _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl, inStoreOption }) {
   const sign = '<p>— The Academy Sports + Outdoors Team</p>';
   const ctaButton = (acceptSwapUrl && alternate)
-    ? `<p style="margin-top:24px"><a href="${acceptSwapUrl}" style="display:inline-block;padding:14px 28px;background:#22d3ee;color:#0a0a0f;border-radius:999px;text-decoration:none;font-weight:700">Accept the alternate — ship now</a></p><p style="color:#888;font-size:12px;margin-top:8px">Clicking the button cancels the delayed order and ships ${alternate.name} right away.</p>`
+    ? `<p style="margin-top:24px"><a href="${acceptSwapUrl}" style="display:inline-block;padding:14px 28px;background:#2563eb;color:#0a0a0f;border-radius:999px;text-decoration:none;font-weight:700">Accept the alternate — ship now</a></p><p style="color:#888;font-size:12px;margin-top:8px">Clicking the button cancels the delayed order and ships ${alternate.name} right away.</p>`
     : '';
   const ctaText = (acceptSwapUrl && alternate) ? `\n\nAccept the alternate (${alternate.name}) and we will cancel the delayed order: ${acceptSwapUrl}` : '';
   const wrap = (subject, body, extraHtml = '', extraText = '') => ({
@@ -2443,7 +2443,7 @@ const VoiceMicButton = ({ value, setValue, disabled = false, size = 36, title, o
     listening    ? T.red :
                    T.text2;
   const stateBg =
-    transcribing ? 'rgba(157,92,255,0.18)' :
+    transcribing ? 'rgba(25,70,200,0.18)' :
     listening    ? 'rgba(255,77,77,0.22)' :
                    'rgba(15,23,42,0.06)';
 
@@ -2520,18 +2520,18 @@ const T = {
   text3: '#94a3b8',
   text4: '#cbd5e1',
 
-  // Accent palette — Academy primary blue, red for sale, deepened warm tones for light bg
-  violet: '#1946c8',
-  violetDeep: '#0e2e8a',
-  pink: '#dc2626',
-  pinkDeep: '#991b1b',
-  cyan: '#0891b2',
-  cyanDeep: '#075985',
-  amber: '#ea580c',
-  amberDeep: '#9a3412',
-  lime: '#16a34a',
-  red: '#dc2626',
-  redDeep: '#991b1b',
+  // Accent palette — United States flag: navy + Academy blue + flag red, on white
+  violet: '#1946c8',     // Academy blue — primary brand / CTA
+  violetDeep: '#002868', // flag navy — deep brand, headers, footer
+  pink: '#c8102e',       // flag red — sale, emphasis, accents
+  pinkDeep: '#9b0c22',
+  cyan: '#2563eb',        // medium blue — AI assistant accent (kept in blue family)
+  cyanDeep: '#1d4ed8',
+  amber: '#c8102e',      // (was warm) → flag red so eyebrow labels read red-white-blue
+  amberDeep: '#9b0c22',
+  lime: '#16a34a',       // green retained for in-stock / success badges (matches Academy)
+  red: '#c8102e',
+  redDeep: '#9b0c22',
   green: '#16a34a',
 
   // Illustration linework — flipped: dark linework on light surfaces
@@ -2545,10 +2545,10 @@ const T = {
   forest: '#15803d',
 
   // Signature gradients — Academy blue-led
-  gradHero: 'linear-gradient(135deg, #1946c8 0%, #2563eb 55%, #3b82f6 100%)',
-  gradAI: 'linear-gradient(135deg, #0891b2 0%, #1946c8 100%)',
-  gradAmber: 'linear-gradient(135deg, #ea580c 0%, #dc2626 100%)',
-  gradCool: 'linear-gradient(135deg, #0891b2 0%, #1946c8 100%)',
+  gradHero: 'linear-gradient(120deg, #002868 0%, #1946c8 50%, #c8102e 100%)',
+  gradAI: 'linear-gradient(135deg, #2563eb 0%, #1946c8 100%)',
+  gradAmber: 'linear-gradient(135deg, #c8102e 0%, #9b0c22 100%)',
+  gradCool: 'linear-gradient(135deg, #2563eb 0%, #1946c8 100%)',
 
   display: '"Fraunces", "Playfair Display", Georgia, serif',
   sans: '"Inter Tight", "Helvetica Neue", system-ui, sans-serif',
@@ -2574,10 +2574,10 @@ const GlobalStyle = () => (
       content: '';
       position: fixed; inset: 0; pointer-events: none; z-index: 0;
       background:
-        radial-gradient(ellipse 80% 60% at 10% 0%, rgba(25,70,200,0.06) 0%, transparent 55%),
-        radial-gradient(ellipse 70% 50% at 90% 30%, rgba(8,145,178,0.04) 0%, transparent 55%),
-        radial-gradient(ellipse 60% 50% at 50% 100%, rgba(234,88,12,0.04) 0%, transparent 60%),
-        radial-gradient(ellipse 70% 60% at 100% 100%, rgba(220,38,38,0.03) 0%, transparent 55%);
+        radial-gradient(ellipse 80% 60% at 10% 0%, rgba(25,70,200,0.07) 0%, transparent 55%),
+        radial-gradient(ellipse 70% 50% at 90% 30%, rgba(200,16,46,0.05) 0%, transparent 55%),
+        radial-gradient(ellipse 60% 50% at 50% 100%, rgba(0,40,104,0.05) 0%, transparent 60%),
+        radial-gradient(ellipse 70% 60% at 100% 100%, rgba(200,16,46,0.04) 0%, transparent 55%);
       animation: mesh-drift 24s ease-in-out infinite alternate;
     }
     @keyframes mesh-drift {
@@ -3058,9 +3058,9 @@ const resolveIllustration = (product) => {
 // Background variants for visual rhythm across grids
 // Background variants for visual rhythm — vivid gradient cards with glass feel
 const ILLUSTRATION_BGS = [
-  `linear-gradient(135deg, rgba(157,92,255,0.18) 0%, rgba(34,211,238,0.12) 100%)`,
+  `linear-gradient(135deg, rgba(25,70,200,0.18) 0%, rgba(37,99,235,0.12) 100%)`,
   `linear-gradient(135deg, rgba(25,70,200,0.08) 0%, rgba(220,38,38,0.05) 100%)`,
-  `linear-gradient(135deg, rgba(34,211,238,0.16) 0%, rgba(157,92,255,0.14) 100%)`,
+  `linear-gradient(135deg, rgba(37,99,235,0.16) 0%, rgba(25,70,200,0.14) 100%)`,
 ];
 
 const ProductIllustration = ({ product, size = 'card', photoUrl }) => {
@@ -3419,7 +3419,7 @@ const UserPill = ({ user, onLogout }) => {
   }, [open]);
 
   if (!user) return null;
-  const accent = user.role === 'admin' ? '#9d5cff' : '#22d3ee';
+  const accent = user.role === 'admin' ? '#1946c8' : '#2563eb';
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
@@ -3557,7 +3557,7 @@ const HOME_HEROES = {
     body: 'Glass, blinds, and scent control — everything dialed before opening morning.',
     cta: 'Shop Deer Season',
     bg: 'linear-gradient(135deg, rgba(20,30,15,0.6) 0%, rgba(40,30,10,0.4) 50%, rgba(15,12,25,0.6) 100%)',
-    glow: 'radial-gradient(ellipse 70% 60% at 25% 50%, rgba(234,88,12,0.10) 0%, transparent 65%), radial-gradient(ellipse 50% 40% at 80% 80%, rgba(22,163,74,0.08) 0%, transparent 65%)',
+    glow: 'radial-gradient(ellipse 70% 60% at 25% 50%, rgba(200,16,46,0.09) 0%, transparent 65%), radial-gradient(ellipse 50% 40% at 80% 80%, rgba(25,70,200,0.07) 0%, transparent 65%)',
     accent: T.amber,
     image: '🦌',
   },
@@ -3568,7 +3568,7 @@ const HOME_HEROES = {
     body: 'Cleats, balls, water bottles — outfit the season in one cart.',
     cta: 'Shop Team Sports',
     bg: 'linear-gradient(135deg, rgba(15,20,40,0.6) 0%, rgba(20,40,55,0.5) 50%, rgba(20,15,35,0.6) 100%)',
-    glow: 'radial-gradient(ellipse 70% 60% at 25% 50%, rgba(34,211,238,0.32) 0%, transparent 65%), radial-gradient(ellipse 50% 40% at 80% 80%, rgba(157,92,255,0.22) 0%, transparent 65%)',
+    glow: 'radial-gradient(ellipse 70% 60% at 25% 50%, rgba(37,99,235,0.32) 0%, transparent 65%), radial-gradient(ellipse 50% 40% at 80% 80%, rgba(25,70,200,0.22) 0%, transparent 65%)',
     accent: T.cyan,
     image: '⚽',
   },
@@ -3579,7 +3579,7 @@ const HOME_HEROES = {
     body: 'Shoes, weights, and apparel built to train hard and last.',
     cta: 'Shop Deals',
     bg: 'linear-gradient(135deg, rgba(35,10,25,0.6) 0%, rgba(45,15,30,0.5) 50%, rgba(20,15,35,0.6) 100%)',
-    glow: 'radial-gradient(ellipse 70% 60% at 25% 50%, rgba(220,38,38,0.10) 0%, transparent 65%), radial-gradient(ellipse 50% 40% at 80% 80%, rgba(234,88,12,0.08) 0%, transparent 65%)',
+    glow: 'radial-gradient(ellipse 70% 60% at 25% 50%, rgba(200,16,46,0.10) 0%, transparent 65%), radial-gradient(ellipse 50% 40% at 80% 80%, rgba(25,70,200,0.08) 0%, transparent 65%)',
     accent: T.pink,
     image: '🏃',
   },
@@ -3592,7 +3592,7 @@ const HOME_HEROES = {
     body: 'Browse our full range. Sign in to unlock personalized recommendations across categories.',
     cta: 'Browse the Store',
     bg: 'linear-gradient(135deg, rgba(15,20,35,0.6) 0%, rgba(25,30,50,0.5) 50%, rgba(20,25,40,0.6) 100%)',
-    glow: 'radial-gradient(ellipse 70% 60% at 25% 50%, rgba(157,92,255,0.28) 0%, transparent 65%), radial-gradient(ellipse 50% 40% at 80% 80%, rgba(34,211,238,0.18) 0%, transparent 65%)',
+    glow: 'radial-gradient(ellipse 70% 60% at 25% 50%, rgba(25,70,200,0.28) 0%, transparent 65%), radial-gradient(ellipse 50% 40% at 80% 80%, rgba(37,99,235,0.18) 0%, transparent 65%)',
     accent: T.cyan,
     image: '✨',
   },
@@ -4968,8 +4968,8 @@ const ChatWidget = () => {
               border: `1px solid ${T.glassBorderHi}`,
               overflow: 'hidden',
               boxShadow: `
-                0 8px 32px rgba(157,92,255,0.4),
-                0 4px 16px rgba(255,77,158,0.3),
+                0 8px 32px rgba(25,70,200,0.4),
+                0 4px 16px rgba(200,16,46,0.3),
                 inset 0 1px 0 rgba(255,255,255,0.3),
                 inset 0 -1px 0 rgba(0,0,0,0.2)
               `,
@@ -5874,7 +5874,7 @@ const VisualSearchPanel = ({ onClose, onResults }) => {
               <>
                 <div style={{
                   padding: '10px 12px', marginBottom: 12, borderRadius: 6,
-                  background: 'rgba(255,94,122,0.1)', border: `1px solid ${T.red}33`,
+                  background: 'rgba(200,16,46,0.1)', border: `1px solid ${T.red}33`,
                   color: T.red, fontSize: 12,
                 }}>{cameraError}</div>
                 <button onClick={stopCamera} style={{
@@ -6008,7 +6008,7 @@ const VisualSearchPanel = ({ onClose, onResults }) => {
             {error && (
               <div style={{
                 padding: '8px 12px', marginBottom: 12, borderRadius: 6,
-                background: 'rgba(255,94,122,0.1)', border: `1px solid ${T.red}33`,
+                background: 'rgba(200,16,46,0.1)', border: `1px solid ${T.red}33`,
                 color: T.red, fontSize: 12,
               }}>{error}</div>
             )}
@@ -6260,7 +6260,7 @@ const OrdersPage = () => {
       <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 10 }}>
         <span style={{
           fontFamily: T.mono, fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase',
-          color: T.cyan, background: 'rgba(34,211,238,0.08)', border: `1px solid ${T.cyan}33`,
+          color: T.cyan, background: 'rgba(37,99,235,0.08)', border: `1px solid ${T.cyan}33`,
           padding: '4px 10px', borderRadius: 999,
         }}>
           ● Live Shopify data
@@ -6438,7 +6438,7 @@ const OrdersPage = () => {
                   <button
                     onClick={() => triggerDisruption(order, 'cancel')}
                     style={{
-                      background: 'rgba(255,94,122,0.08)', border: `1px solid ${T.red}44`,
+                      background: 'rgba(200,16,46,0.08)', border: `1px solid ${T.red}44`,
                       color: T.red, fontSize: 12, fontWeight: 600, padding: '6px 12px',
                       borderRadius: 999, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
                     }}>
@@ -6843,7 +6843,7 @@ const KitBuilder = () => {
                       display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 8,
                       fontSize: 11, fontFamily: T.mono, fontWeight: 600,
                       color: itemStock[item.id].tone === 'good' ? T.lime : itemStock[item.id].tone === 'bad' ? T.red : T.cyan,
-                      background: itemStock[item.id].tone === 'good' ? 'rgba(163,255,92,0.08)' : itemStock[item.id].tone === 'bad' ? 'rgba(255,94,122,0.08)' : 'rgba(34,211,238,0.08)',
+                      background: itemStock[item.id].tone === 'good' ? 'rgba(22,163,74,0.08)' : itemStock[item.id].tone === 'bad' ? 'rgba(200,16,46,0.08)' : 'rgba(37,99,235,0.08)',
                       border: `1px solid ${itemStock[item.id].tone === 'good' ? T.lime : itemStock[item.id].tone === 'bad' ? T.red : T.cyan}33`,
                       padding: '3px 9px', borderRadius: 999,
                     }}>
@@ -6944,7 +6944,7 @@ const DisruptionPanel = () => {
   return (
     <div style={{
       marginTop: 28,
-      background: 'linear-gradient(135deg, rgba(255,94,122,0.05) 0%, rgba(255,181,71,0.04) 100%)',
+      background: 'linear-gradient(135deg, rgba(200,16,46,0.05) 0%, rgba(200,16,46,0.04) 100%)',
       border: `1px solid ${T.amber}33`,
       borderRadius: 12, overflow: 'hidden',
     }}>
@@ -7242,7 +7242,7 @@ const MerchTool = () => {
       {/* ---------- AI ASSISTANT PANEL ---------- */}
       <div style={{
         marginTop: 36,
-        background: 'linear-gradient(135deg, rgba(157,92,255,0.08) 0%, rgba(255,77,158,0.04) 100%)',
+        background: 'linear-gradient(135deg, rgba(25,70,200,0.08) 0%, rgba(200,16,46,0.04) 100%)',
         backdropFilter: 'blur(20px)',
         WebkitBackdropFilter: 'blur(20px)',
         border: `1px solid ${T.violet}33`,
@@ -7301,7 +7301,7 @@ const MerchTool = () => {
           {LLM_CONFIG.source === 'proxy' ? (
             <div style={{
               padding: 16,
-              background: 'rgba(163,255,92,0.06)',
+              background: 'rgba(22,163,74,0.06)',
               border: `1px solid ${T.lime}44`,
               borderRadius: 8,
               fontSize: 12, color: T.text2, lineHeight: 1.6,
@@ -7628,7 +7628,7 @@ const MerchTool = () => {
         <div style={{
           padding: '16px 22px',
           borderBottom: `1px solid ${T.hairline}`,
-          background: 'rgba(157,92,255,0.04)',
+          background: 'rgba(25,70,200,0.04)',
           display: 'flex', justifyContent: 'space-between',
         }}>
           <strong style={{ fontSize: 14, color: T.text }}>PDP Personalized Module</strong>
@@ -7772,7 +7772,7 @@ const PdpModuleProductPicker = ({ excludeIds = [], onPick }) => {
   if (!open) {
     return (
       <button onClick={() => setOpen(true)} style={{
-        background: 'rgba(157,92,255,0.08)',
+        background: 'rgba(25,70,200,0.08)',
         border: `1px solid ${T.violet}44`,
         color: T.violet,
         padding: '8px 10px', fontSize: 11, cursor: 'pointer', borderRadius: 4,
@@ -7835,7 +7835,7 @@ const CategoryPinAdder = ({ category, currentPins, onPin }) => {
       <button
         onClick={() => setOpen(o => !o)}
         style={{
-          background: 'rgba(34,211,238,0.08)',
+          background: 'rgba(37,99,235,0.08)',
           border: `1px solid ${T.cyan}44`,
           color: T.cyan,
           padding: '6px 12px', fontSize: 11, cursor: 'pointer',
@@ -7949,7 +7949,7 @@ const AdminAssistant = ({ rules, pinnedByCategory, pdpOverrides, onApply, llmEna
   return (
     <div style={{
       marginTop: 28,
-      background: 'linear-gradient(135deg, rgba(34,211,238,0.06) 0%, rgba(157,92,255,0.04) 100%)',
+      background: 'linear-gradient(135deg, rgba(37,99,235,0.06) 0%, rgba(25,70,200,0.04) 100%)',
       backdropFilter: 'blur(20px)',
       WebkitBackdropFilter: 'blur(20px)',
       border: `1px solid ${T.cyan}33`,
@@ -8018,7 +8018,7 @@ const AdminAssistant = ({ rules, pinnedByCategory, pdpOverrides, onApply, llmEna
                     const isInfo = s.kind === 'info';
                     return (
                       <div key={j} style={{
-                        background: applied ? 'rgba(163,255,92,0.08)' : 'rgba(255,255,255,0.03)',
+                        background: applied ? 'rgba(22,163,74,0.08)' : 'rgba(255,255,255,0.03)',
                         border: `1px solid ${applied ? T.lime + '44' : T.hairline}`,
                         borderRadius: 8,
                         padding: 12,
@@ -8078,7 +8078,7 @@ const AdminAssistant = ({ rules, pinnedByCategory, pdpOverrides, onApply, llmEna
                           {applied && (
                             <span style={{
                               padding: '6px 10px', borderRadius: 6,
-                              background: 'rgba(163,255,92,0.15)',
+                              background: 'rgba(22,163,74,0.15)',
                               color: T.lime, fontSize: 11, fontWeight: 700,
                               display: 'flex', alignItems: 'center', gap: 4,
                             }}>
@@ -8100,7 +8100,7 @@ const AdminAssistant = ({ rules, pinnedByCategory, pdpOverrides, onApply, llmEna
         {loading && (
           <div style={{
             alignSelf: 'flex-start',
-            background: 'rgba(34,211,238,0.06)',
+            background: 'rgba(37,99,235,0.06)',
             border: `1px solid ${T.cyan}33`,
             padding: '10px 14px',
             borderRadius: '12px 12px 12px 4px',
@@ -8132,7 +8132,7 @@ const AdminAssistant = ({ rules, pinnedByCategory, pdpOverrides, onApply, llmEna
                     fontSize: 12, textAlign: 'left', cursor: 'pointer',
                     transition: 'all 0.15s',
                   }}
-                  onMouseEnter={e => { e.currentTarget.style.borderColor = T.cyan + '44'; e.currentTarget.style.background = 'rgba(34,211,238,0.05)'; }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = T.cyan + '44'; e.currentTarget.style.background = 'rgba(37,99,235,0.05)'; }}
                   onMouseLeave={e => { e.currentTarget.style.borderColor = T.hairline; e.currentTarget.style.background = 'rgba(255,255,255,0.03)'; }}
                 >
                   {p}
@@ -8385,7 +8385,7 @@ const CartPage = () => {
           ))}
           <div style={{
             marginTop: 24, padding: 22,
-            background: 'linear-gradient(135deg, rgba(157,92,255,0.10) 0%, rgba(255,77,158,0.06) 100%)',
+            background: 'linear-gradient(135deg, rgba(25,70,200,0.10) 0%, rgba(200,16,46,0.06) 100%)',
             backdropFilter: 'blur(20px)',
             WebkitBackdropFilter: 'blur(20px)',
             border: `1px solid ${T.violet}44`,
@@ -8515,8 +8515,8 @@ const LoginPage = () => {
   const cards = [
     { user: DEMO_USERS.jake,  icon: '🦌', subtitle: 'Hunter · Texas',          accent: '#c5523e' },
     { user: DEMO_USERS.maria, icon: '⚽', subtitle: 'Parent · Two kids',       accent: '#1e6f5c' },
-    { user: DEMO_USERS.alex,  icon: '🏃', subtitle: 'Fitness · Deal-led',      accent: '#22d3ee' },
-    { user: DEMO_USERS.admin, icon: '⚙️', subtitle: 'Admin · Merchandiser',   accent: '#9d5cff' },
+    { user: DEMO_USERS.alex,  icon: '🏃', subtitle: 'Fitness · Deal-led',      accent: '#2563eb' },
+    { user: DEMO_USERS.admin, icon: '⚙️', subtitle: 'Admin · Merchandiser',   accent: '#1946c8' },
   ];
 
   return (
