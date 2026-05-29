@@ -4749,7 +4749,7 @@ const PDPModule = ({ source, label, children }) => {
   const colors = {
     PIM: { bg: 'rgba(25,70,200,0.1)', text: T.cyan },
     DAM: { bg: 'rgba(212,161,78,0.12)', text: T.amber },
-    'AI-generated': { bg: 'rgba(61,255,165,0.1)', text: T.green },
+    'AI-generated': { bg: 'rgba(22,163,74,0.1)', text: T.green },
   };
   const c = colors[source];
   return (
@@ -5061,7 +5061,7 @@ const ChatWidget = () => {
               <div style={{
                 position: 'relative', zIndex: 2,
                 color: 'white',
-                filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.3))',
+                filter: 'drop-shadow(0 2px 4px rgba(15,23,42,0.12))',
                 display: 'flex',
               }}>
                 <Sparkles size={26} strokeWidth={2.2} />
@@ -5076,7 +5076,7 @@ const ChatWidget = () => {
               style={{
                 position: 'absolute', right: 'calc(100% + 16px)', top: '50%',
                 transform: 'translateY(-50%)',
-                background: 'rgba(20,15,35,0.85)',
+                background: 'rgba(255,255,255,0.92)',
                 backdropFilter: 'blur(12px)',
                 WebkitBackdropFilter: 'blur(12px)',
                 color: T.text,
@@ -5085,7 +5085,7 @@ const ChatWidget = () => {
                 fontSize: 12, fontWeight: 500,
                 whiteSpace: 'nowrap',
                 border: `1px solid ${T.glassBorder}`,
-                boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+                boxShadow: '0 4px 16px rgba(15,23,42,0.16)',
                 pointerEvents: 'none',
               }}>
               <span className="shimmer-text" style={{ fontWeight: 600 }}>Ask AI</span>
@@ -5094,7 +5094,7 @@ const ChatWidget = () => {
                 position: 'absolute', left: '100%', top: '50%', transform: 'translateY(-50%)',
                 width: 0, height: 0,
                 borderTop: '6px solid transparent', borderBottom: '6px solid transparent',
-                borderLeft: `6px solid rgba(20,15,35,0.85)`,
+                borderLeft: `6px solid rgba(255,255,255,0.92)`,
               }} />
             </motion.div>
           </motion.div>
@@ -5117,7 +5117,7 @@ const ChatWidget = () => {
               borderRadius: 20,
               overflow: 'hidden',
               display: 'flex', flexDirection: 'column',
-              background: 'rgba(20,15,35,0.85)',
+              background: 'rgba(255,255,255,0.92)',
               backdropFilter: 'blur(32px) saturate(180%)',
               WebkitBackdropFilter: 'blur(32px) saturate(180%)',
               border: `1px solid ${T.glassBorderHi}`,
@@ -5297,7 +5297,7 @@ const ChatWidget = () => {
                       Visual Search
                     </button>
                     <button onClick={handleKitShortcut} style={{
-                      background: 'rgba(61,255,165,0.08)',
+                      background: 'rgba(22,163,74,0.08)',
                       border: `1px solid ${T.green}33`,
                       color: T.green,
                       padding: '12px',
@@ -7280,7 +7280,7 @@ const MerchTool = () => {
         {(saved || adapterSaved || llmSaved) && (
           <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} style={{
             marginTop: 24, padding: '12px 18px',
-            background: 'rgba(61,255,165,0.08)',
+            background: 'rgba(22,163,74,0.08)',
             border: `1px solid ${T.green}44`,
             color: T.green,
             borderRadius: 8,
@@ -7347,8 +7347,8 @@ const MerchTool = () => {
                 <br /><br />
                 <strong style={{ color: T.text }}>Three ways to wire a key:</strong>{' '}
                 <span style={{ color: T.text3 }}>
-                  (a) <code style={{ background: 'rgba(0,0,0,0.3)', padding: '1px 6px', fontFamily: T.mono, color: T.amber, borderRadius: 3 }}>VITE_PROXY_URL</code> in .env.local or GitHub Secret (recommended — uses Cloudflare Worker, key stays server-side),
-                  (b) <code style={{ background: 'rgba(0,0,0,0.3)', padding: '1px 6px', fontFamily: T.mono, color: T.amber, borderRadius: 3 }}>VITE_ANTHROPIC_KEY</code> for direct mode (laptop dev only — exposes key),
+                  (a) <code style={{ background: 'rgba(15,23,42,0.12)', padding: '1px 6px', fontFamily: T.mono, color: T.amber, borderRadius: 3 }}>VITE_PROXY_URL</code> in .env.local or GitHub Secret (recommended — uses Cloudflare Worker, key stays server-side),
+                  (b) <code style={{ background: 'rgba(15,23,42,0.12)', padding: '1px 6px', fontFamily: T.mono, color: T.amber, borderRadius: 3 }}>VITE_ANTHROPIC_KEY</code> for direct mode (laptop dev only — exposes key),
                   (c) paste here at runtime (browser-only, gone when tab closes).
                 </span>
               </>
@@ -7383,7 +7383,7 @@ const MerchTool = () => {
                   style={{
                     flex: 1,
                     padding: 14,
-                    background: 'rgba(0,0,0,0.3)',
+                    background: 'rgba(15,23,42,0.12)',
                     border: `1px solid ${T.glassBorder}`,
                     color: T.text,
                     fontSize: 13, fontFamily: T.mono,
