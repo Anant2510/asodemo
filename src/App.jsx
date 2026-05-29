@@ -1113,6 +1113,33 @@ async function agentReadState(key) {
   } catch { return null; }
 }
 
+// ----- Close the loop: write the placed order back to Shopify -----------------
+// Calls the Worker's /v1/shopify/order route, which uses the Admin API to create
+// a real order on the dev store. Shopify then attaches it to the customer's
+// account (linked by email) and auto-decrements inventory. Best-effort: callers
+// continue the "placed" UI regardless of outcome and log on failure.
+async function placeShopifyOrder({ customerEmail, lineItems, note }) {
+  const base = _workerBase();
+  if (!base) return { success: false, error: 'No proxy configured' };
+  if (!customerEmail || !Array.isArray(lineItems) || lineItems.length === 0) {
+    return { success: false, error: 'Missing customerEmail or lineItems' };
+  }
+  try {
+    const res = await fetch(`${base}/v1/shopify/order`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customerEmail, lineItems, note }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      return { success: false, error: data?.error || `HTTP ${res.status}`, details: data?.details || data };
+    }
+    return { success: true, order: data?.order || null };
+  } catch (e) {
+    return { success: false, error: String(e?.message || e) };
+  }
+}
+
 // Pick an in-stock alternate for a cancelled item: same category, closest price,
 // preferring higher rating. Excludes the cancelled product itself.
 function pickAlternate(cancelledItem, catalog) {
@@ -7929,7 +7956,7 @@ const AdminAssistant = ({ rules, pinnedByCategory, pdpOverrides, onApply, llmEna
    CART (minimal — for demo flow continuity)
    ============================================================================ */
 const CartPage = () => {
-  const { cart, setView, shouldCheckout, clearCart, markConverted, cartDiscounts, agentKey, agentEnabled, applyCartDiscount } = useApp();
+  const { cart, setView, shouldCheckout, clearCart, markConverted, cartDiscounts, agentKey, agentEnabled, applyCartDiscount, adapterId, refreshShopifyOrders } = useApp();
   const [placed, setPlaced] = useState(false);
   // Snapshot the cart at the moment of placement so the confirmation page
   // can still show "you bought X items" even after we clear the live cart.
@@ -7959,18 +7986,54 @@ const CartPage = () => {
     return () => { cancelled = true; };
   }, [agentKey, agentEnabled, applyCartDiscount]);
 
+  // Shared placement path used by BOTH the chat-driven auto-checkout effect and
+  // the manual PLACE ORDER button. Beyond the local "placed" UI it writes the
+  // order back to Shopify (real order on the dev store, attached to the persona's
+  // customer record by email) so order history + inventory update — the
+  // two-way feedback loop that drives personalization on the next interaction.
+  // Best-effort: if the Shopify write fails (missing scope, network, etc.) we
+  // still show the order placed locally so the demo never visibly breaks.
+  const commitPlacement = useCallback(() => {
+    const items = cart.length;
+    const placedTotal = total;
+    setPlacedSnapshot({ items, total: placedTotal });
+    setPlaced(true);
+    if (typeof markConverted === 'function') markConverted();
+
+    if (adapterId === 'shopify' && agentKey && cart.length > 0) {
+      const lineItems = cart
+        .map(i => ({ variantId: i.product?.shopifyVariantId, quantity: i.qty }))
+        .filter(li => !!li.variantId);
+      if (lineItems.length > 0) {
+        placeShopifyOrder({
+          customerEmail: agentKey,
+          lineItems,
+          note: `TechDay demo · in-app order · $${placedTotal.toFixed(2)}`,
+        }).then(r => {
+          if (r?.success) {
+            // Pull fresh order history so chat + Orders page see the new order.
+            // Indexing delay: retry once after a beat to catch the late index.
+            if (typeof refreshShopifyOrders === 'function') {
+              refreshShopifyOrders();
+              setTimeout(() => refreshShopifyOrders?.(), 2500);
+            }
+          } else {
+            console.warn('Shopify order write-back failed:', r?.error, r?.details);
+          }
+        });
+      }
+    }
+
+    clearCart();
+  }, [cart, total, markConverted, clearCart, adapterId, agentKey, refreshShopifyOrders]);
+
   // If chat asked us to checkout and cart isn't empty, auto-place after a beat
   useEffect(() => {
     if (shouldCheckout && cart.length > 0 && !placed) {
-      const t = setTimeout(() => {
-        setPlacedSnapshot({ items: cart.length, total });
-        setPlaced(true);
-        if (typeof markConverted === 'function') markConverted();  // agent: stop escalating
-        clearCart();   // empty the live cart after capturing snapshot
-      }, 900);
+      const t = setTimeout(() => { commitPlacement(); }, 900);
       return () => clearTimeout(t);
     }
-  }, [shouldCheckout, cart.length, placed, total, clearCart, markConverted]);
+  }, [shouldCheckout, cart.length, placed, commitPlacement]);
 
   if (placed) {
     const items = placedSnapshot?.items ?? 0;
@@ -8072,12 +8135,7 @@ const CartPage = () => {
             </div>
           </div>
           <button
-            onClick={() => {
-              setPlacedSnapshot({ items: cart.length, total });
-              setPlaced(true);
-              if (typeof markConverted === 'function') markConverted();
-              clearCart();
-            }}
+            onClick={() => commitPlacement()}
             style={{
               marginTop: 18, width: '100%',
               background: T.gradHero, color: 'white',
@@ -8736,6 +8794,24 @@ export default function App() {
     setCartDiscounts(d => (d[productId] === rate ? d : { ...d, [productId]: rate }));
   }, []);
 
+  // Pulls the persona's Shopify order history fresh from the Storefront API.
+  // Called after we place a new order so the chat / Orders page see it without
+  // a page reload. Note: Shopify can take a few seconds to index a brand-new
+  // order, so the very first refresh may not include it; a second refresh or
+  // a reload will. Best-effort, swallows errors so it never breaks the UI.
+  const refreshShopifyOrders = useCallback(async () => {
+    if (adapterId !== 'shopify') return;
+    const token = shopifySession?.token;
+    if (!token) return;
+    try {
+      const sf = ADAPTERS.shopify;
+      const orders = await sf.getCustomerOrders(token);
+      setShopifyOrders(orders || []);
+    } catch (e) {
+      console.warn('refreshShopifyOrders failed:', e);
+    }
+  }, [adapterId, shopifySession?.token]);
+
   // Reset conversion flag whenever a new item is added (a fresh shopping session).
   useEffect(() => {
     if (cart.length > 0 && agentConverted) setAgentConverted(false);
@@ -8898,6 +8974,9 @@ export default function App() {
     cartDiscounts,
     agentKey, agentEnabled, applyCartDiscount,
     markConverted: () => setAgentConverted(true),
+    // Closes the loop: lets CartPage write back to Shopify on order placement
+    // and refresh the persona's order history afterwards.
+    refreshShopifyOrders,
   };
 
   const adapterDesc = ADAPTER_DESCRIBE[adapterId];
