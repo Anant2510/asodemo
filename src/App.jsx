@@ -1085,6 +1085,24 @@ function _workerBase() {
   return (LLM_CONFIG.proxyUrl || '').replace(/\/v1\/messages\/?$/, '').replace(/\/+$/, '');
 }
 // Build the email discount-accept link (Worker route → applies discount + marks accepted).
+// Builds the URL embedded in delay-with-alternate emails. Clicking it cancels
+// the original Shopify order and creates a new one for the alternate (worker
+// side: /v1/disruption/swap). Demo-only — link is unauthenticated.
+function swapAcceptUrl({ key, orderGid, variantGid, qty, title, price, origName }) {
+  const base = _workerBase();
+  if (!base || !key || !orderGid || !variantGid) return null;
+  const qs = new URLSearchParams({
+    key,
+    order: orderGid,
+    variant: variantGid,
+    qty: String(qty || 1),
+    title: title || 'alternate',
+    price: price != null ? String(price) : '',
+    origName: origName || '',
+  });
+  return `${base}/v1/disruption/swap?${qs.toString()}`;
+}
+
 function agentAcceptUrl(key, itemId) {
   const base = _workerBase();
   return `${base}/v1/agent/accept?key=${encodeURIComponent(key)}&item=${encodeURIComponent(itemId)}`;
@@ -1166,14 +1184,16 @@ function reEvaluatedEta(extraDays = 3) {
 // Ask Claude to draft a personalized email for a given scenario. Returns
 // { subject, html, text } or null. Falls back to a templated email if the LLM
 // is unavailable, so the demo never dead-ends.
-async function draftPersonalizedEmail({ scenario, persona, customer, orders, focusItem, alternate, eta, homeStore }) {
+async function draftPersonalizedEmail({ scenario, persona, customer, orders, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl }) {
   const pName = customer?.firstName || PERSONAS[persona]?.name || 'there';
   const historyLines = (orders || []).slice(0, 5).map(o =>
     `- ${o.daysAgo != null ? o.daysAgo + ' days ago' : 'recently'}: ${o.items.map(i => i.title).join(', ')} ($${(o.total || 0).toFixed(2)})`
   ).join('\n');
 
   const scenarioBrief = {
-    delay: `One of ${pName}'s orders is delayed. Reassure them, apologize briefly, give the new estimated delivery date: ${eta}. Offer a small good-will gesture (free expedited shipping on the next order). Keep it warm and confident, not corporate.`,
+    delay: alternate
+      ? `One of ${pName}'s orders is delayed by ${delayDays || 'several'} days — that's longer than we'd like. New ETA: ${eta}. Apologize briefly, then PROACTIVELY present this in-stock alternative as a faster option: "${alternate?.name}" ($${alternate?.price?.toFixed(2)}). Explain in one line why it's a good match for ${pName}. Tell them they can wait for the original OR accept the alternate (we'll cancel the delayed order and ship the alternate right away) — there will be a button below to accept. Warm, helpful, not corporate.`
+      : `One of ${pName}'s orders is delayed by ${delayDays || 'a few'} days. Reassure them, apologize briefly, give the new estimated delivery date: ${eta}. Offer a small good-will gesture (free expedited shipping on the next order). Keep it warm and confident, not corporate.`,
     cancel: `An item in ${pName}'s order had to be cancelled (out of stock): "${focusItem?.title}". Apologize, and proactively recommend this in-stock alternative we can ship right away: "${alternate?.name}" ($${alternate?.price?.toFixed(2)}). Explain in one line why it's a good match. Offer to swap it with one click.`,
     backInStock: `An item ${pName} bought before is popular and back in stock: "${focusItem?.title}". Let them know it's available again at their ${homeStore?.city || 'local'} store, in case they want to restock.`,
     winBack: `${pName} hasn't ordered in a while. Write a friendly win-back note referencing what they bought before, with a light incentive (10% off their category) to come back. No guilt, just warmth.`,
@@ -1195,7 +1215,7 @@ Return ONLY valid JSON, no preamble, no markdown fences:
 
   const usingProxy = Boolean(LLM_CONFIG.proxyUrl);
   if (!LLM_CONFIG.enabled) {
-    return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore });
+    return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl });
   }
   const url = usingProxy ? LLM_CONFIG.proxyUrl : 'https://api.anthropic.com/v1/messages';
   const headers = usingProxy
@@ -1213,27 +1233,49 @@ Return ONLY valid JSON, no preamble, no markdown fences:
         messages: [{ role: 'user', content: 'Write the email now. Return only the JSON.' }],
       }),
     });
-    if (!res.ok) return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore });
+    if (!res.ok) return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl });
     const data = await res.json();
     const textBlock = (data.content || []).find(b => b.type === 'text')?.text || '';
     const jsonStr = textBlock.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(jsonStr);
     if (!parsed.subject || (!parsed.html && !parsed.text)) {
-      return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore });
+      return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl });
+    }
+    // For delay-with-alternate: append a CTA button to the LLM-drafted HTML.
+    // We don't trust the LLM to format the swap URL exactly right, so we own this.
+    if (acceptSwapUrl && alternate) {
+      const cta = `<p style="margin-top:24px"><a href="${acceptSwapUrl}" style="display:inline-block;padding:14px 28px;background:#22d3ee;color:#0a0a0f;border-radius:999px;text-decoration:none;font-weight:700">Accept the alternate — ship now</a></p><p style="color:#888;font-size:12px;margin-top:8px">Clicking the button cancels the delayed order and ships ${alternate.name} right away.</p>`;
+      parsed.html = (parsed.html || '') + cta;
+      parsed.text = (parsed.text || '') + `\n\nAccept the alternate (${alternate.name}) and we will cancel the delayed order: ${acceptSwapUrl}`;
     }
     return parsed;
   } catch (e) {
     console.warn('Email draft LLM failed, using fallback:', e.message);
-    return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore });
+    return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl });
   }
 }
 
 // Templated fallback so a flaky LLM never breaks the demo.
-function _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore }) {
+function _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl }) {
   const sign = '<p>— The Academy Sports + Outdoors Team</p>';
-  const wrap = (subject, body) => ({ subject, html: `${body}${sign}`, text: body.replace(/<[^>]+>/g, '') + '\n— The Academy Sports + Outdoors Team' });
+  const ctaButton = (acceptSwapUrl && alternate)
+    ? `<p style="margin-top:24px"><a href="${acceptSwapUrl}" style="display:inline-block;padding:14px 28px;background:#22d3ee;color:#0a0a0f;border-radius:999px;text-decoration:none;font-weight:700">Accept the alternate — ship now</a></p><p style="color:#888;font-size:12px;margin-top:8px">Clicking the button cancels the delayed order and ships ${alternate.name} right away.</p>`
+    : '';
+  const ctaText = (acceptSwapUrl && alternate) ? `\n\nAccept the alternate (${alternate.name}) and we will cancel the delayed order: ${acceptSwapUrl}` : '';
+  const wrap = (subject, body, extraHtml = '', extraText = '') => ({
+    subject,
+    html: `${body}${extraHtml}${sign}`,
+    text: body.replace(/<[^>]+>/g, '') + extraText + '\n— The Academy Sports + Outdoors Team',
+  });
   switch (scenario) {
     case 'delay':
+      if (alternate && acceptSwapUrl) {
+        return wrap(
+          `Your order is delayed — here's a faster option`,
+          `<p>Hi ${pName},</p><p>Your recent order is running ${delayDays || 'several'} days behind — we're sorry. Updated ETA: <strong>${eta}</strong>.</p><p>If you'd rather not wait, we have <strong>${alternate?.name}</strong> ($${alternate?.price?.toFixed(2)}) in stock and can ship it right away. We'll cancel the delayed order and you keep the savings.</p>`,
+          ctaButton, ctaText
+        );
+      }
       return wrap(`A quick update on your order`, `<p>Hi ${pName},</p><p>Your recent order is running a little behind — we're sorry for the wait. Your updated delivery date is <strong>${eta}</strong>. To make up for it, your next order ships expedited on us.</p>`);
     case 'cancel':
       return wrap(`We've got a great alternative for you`, `<p>Hi ${pName},</p><p>Unfortunately "${focusItem?.title}" sold out before we could ship it. The good news: <strong>${alternate?.name}</strong> ($${alternate?.price?.toFixed(2)}) is in stock and a great match — we can ship it right away. Just reply or tap to swap.</p>`);
@@ -1932,6 +1974,7 @@ class ShopifyAdapter extends CommerceAdapter {
           orders(first: 30, sortKey: PROCESSED_AT, reverse: true) {
             edges {
               node {
+                id
                 orderNumber
                 processedAt
                 totalPrice { amount currencyCode }
@@ -1966,6 +2009,7 @@ class ShopifyAdapter extends CommerceAdapter {
       const placedDaysAgo = 4 + idx * 17 + (node.orderNumber % 7);
       const apparentDate = new Date(now - placedDaysAgo * 86400000);
       return {
+        id: node.id || null,    // GID like gid://shopify/Order/<numeric> — needed for Admin API swap
         orderNumber: node.orderNumber,
         date: apparentDate,
         daysAgo: placedDaysAgo,
@@ -5988,13 +6032,19 @@ const OrdersPage = () => {
 
   // Disruption email state: { [orderNumber]: { status: 'sending'|'sent'|'error', scenario, msg } }
   const [disruption, setDisruption] = useState({});
+  // Per-order configurable delay (days). >3 triggers the alternate-recovery path.
+  const [delayDaysByOrder, setDelayDaysByOrder] = useState({});
+  const delayDaysFor = (orderNumber) => delayDaysByOrder[orderNumber] ?? 3;
 
   const customerZip = shopifySession?.profile?.address?.zip || '77024';
   const homeStore = zipToStore(customerZip);
   const recipientEmail = shopifySession?.profile?.email || PERSONAS[persona]?.shopify?.email;
 
   // Trigger a disruption (delay or cancel) for one order → AI-draft + real send.
-  const triggerDisruption = async (order, scenario) => {
+  // For 'delay': delayDays is configurable; if >3 days, we also surface an
+  // in-stock alternate and embed an "Accept the alternate" CTA in the email
+  // that swaps the order via the worker on click.
+  const triggerDisruption = async (order, scenario, delayDays) => {
     if (!recipientEmail) {
       setDisruption(d => ({ ...d, [order.orderNumber]: { status: 'error', scenario, msg: 'No customer email on file.' } }));
       return;
@@ -6002,8 +6052,25 @@ const OrdersPage = () => {
     setDisruption(d => ({ ...d, [order.orderNumber]: { status: 'sending', scenario } }));
 
     const focusItem = order.items?.[0] || null;
-    const alternate = scenario === 'cancel' ? pickAlternate(focusItem, CATALOG) : null;
-    const eta = scenario === 'delay' ? reEvaluatedEta(3) : null;
+    const effectiveDelay = scenario === 'delay' ? (delayDays || 3) : null;
+    // Alternate is offered when: cancel (always), OR delay > 3 days.
+    const needAlternate = scenario === 'cancel' || (scenario === 'delay' && effectiveDelay > 3);
+    const alternate = needAlternate ? pickAlternate(focusItem, CATALOG) : null;
+    const eta = scenario === 'delay' ? reEvaluatedEta(effectiveDelay) : null;
+
+    // Build the swap-accept URL only for delay-with-alternate (cancel doesn't need it
+    // — cancel emails describe the swap as already happening, no user click required).
+    const acceptSwapUrl = (scenario === 'delay' && alternate && order.id && alternate.shopifyVariantId)
+      ? swapAcceptUrl({
+          key: recipientEmail,
+          orderGid: order.id,
+          variantGid: alternate.shopifyVariantId,
+          qty: focusItem?.quantity || 1,
+          title: alternate.name,
+          price: alternate.price?.toFixed(2),
+          origName: `#${order.orderNumber}`,
+        })
+      : null;
 
     const email = await draftPersonalizedEmail({
       scenario,
@@ -6014,6 +6081,8 @@ const OrdersPage = () => {
       alternate,
       eta,
       homeStore,
+      delayDays: effectiveDelay,
+      acceptSwapUrl,
     });
 
     const sendRes = await sendEmail({
@@ -6023,13 +6092,16 @@ const OrdersPage = () => {
       text: email.text,
     });
 
+    const successMsg = scenario === 'delay'
+      ? (acceptSwapUrl
+          ? `Delay email sent (${effectiveDelay}d) — alternate offered: ${alternate?.name}`
+          : `Delay email sent — new ETA ${eta}`)
+      : `Cancel email sent — offered ${alternate?.name || 'an alternate'}`;
+
     setDisruption(d => ({
       ...d,
       [order.orderNumber]: sendRes.success
-        ? { status: 'sent', scenario, msg: scenario === 'delay'
-            ? `Delay email sent — new ETA ${eta}`
-            : `Cancel email sent — offered ${alternate?.name || 'an alternate'}`,
-            to: recipientEmail }
+        ? { status: 'sent', scenario, msg: successMsg, to: recipientEmail }
         : { status: 'error', scenario, msg: sendRes.error || 'Send failed' },
     }));
   };
@@ -6216,14 +6288,29 @@ const OrdersPage = () => {
                 }
                 return <>
                   <span style={{ fontSize: 11, fontFamily: T.mono, color: T.text3, marginRight: 4 }}>Simulate disruption:</span>
+                  <select
+                    value={delayDaysFor(order.orderNumber)}
+                    onChange={e => setDelayDaysByOrder(m => ({ ...m, [order.orderNumber]: Number(e.target.value) }))}
+                    title="Days the order is delayed by — over 3 days triggers an alternate-product recovery"
+                    style={{
+                      background: 'rgba(255,181,71,0.08)', border: `1px solid ${T.amber}44`,
+                      color: T.amber, fontSize: 12, fontWeight: 600, padding: '5px 8px',
+                      borderRadius: 999, cursor: 'pointer', fontFamily: T.mono, outline: 'none', appearance: 'none',
+                    }}>
+                    <option value={1} style={{ background: '#14141c', color: T.amber }}>1d</option>
+                    <option value={3} style={{ background: '#14141c', color: T.amber }}>3d</option>
+                    <option value={5} style={{ background: '#14141c', color: T.amber }}>5d ↻</option>
+                    <option value={7} style={{ background: '#14141c', color: T.amber }}>7d ↻</option>
+                  </select>
                   <button
-                    onClick={() => triggerDisruption(order, 'delay')}
+                    onClick={() => triggerDisruption(order, 'delay', delayDaysFor(order.orderNumber))}
+                    title={delayDaysFor(order.orderNumber) > 3 ? 'Delay is over 3 days — email will include an alternate-product recovery option' : 'Send delay notification'}
                     style={{
                       background: 'rgba(255,181,71,0.08)', border: `1px solid ${T.amber}44`,
                       color: T.amber, fontSize: 12, fontWeight: 600, padding: '6px 12px',
                       borderRadius: 999, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
                     }}>
-                    <Loader2 size={12} /> Delay
+                    <Loader2 size={12} /> Delay {delayDaysFor(order.orderNumber) > 3 && '+ alt'}
                   </button>
                   <button
                     onClick={() => triggerDisruption(order, 'cancel')}
