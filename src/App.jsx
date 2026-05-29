@@ -3059,7 +3059,7 @@ const resolveIllustration = (product) => {
 // Background variants for visual rhythm — vivid gradient cards with glass feel
 const ILLUSTRATION_BGS = [
   `linear-gradient(135deg, rgba(157,92,255,0.18) 0%, rgba(34,211,238,0.12) 100%)`,
-  `linear-gradient(135deg, rgba(255,77,158,0.16) 0%, rgba(255,181,71,0.12) 100%)`,
+  `linear-gradient(135deg, rgba(25,70,200,0.08) 0%, rgba(220,38,38,0.05) 100%)`,
   `linear-gradient(135deg, rgba(34,211,238,0.16) 0%, rgba(157,92,255,0.14) 100%)`,
 ];
 
@@ -6416,7 +6416,7 @@ const OrdersPage = () => {
                     onChange={e => setDelayDaysByOrder(m => ({ ...m, [order.orderNumber]: Number(e.target.value) }))}
                     title="Days the order is delayed by — over 3 days triggers an alternate-product recovery"
                     style={{
-                      background: 'rgba(255,181,71,0.08)', border: `1px solid ${T.amber}44`,
+                      background: 'rgba(234,88,12,0.08)', border: `1px solid ${T.amber}55`,
                       color: T.amber, fontSize: 12, fontWeight: 600, padding: '5px 8px',
                       borderRadius: 999, cursor: 'pointer', fontFamily: T.mono, outline: 'none', appearance: 'none',
                     }}>
@@ -6429,7 +6429,7 @@ const OrdersPage = () => {
                     onClick={() => triggerDisruption(order, 'delay', delayDaysFor(order.orderNumber))}
                     title={delayDaysFor(order.orderNumber) > 3 ? 'Delay is over 3 days — email will include an alternate-product recovery option' : 'Send delay notification'}
                     style={{
-                      background: 'rgba(255,181,71,0.08)', border: `1px solid ${T.amber}44`,
+                      background: 'rgba(234,88,12,0.08)', border: `1px solid ${T.amber}55`,
                       color: T.amber, fontSize: 12, fontWeight: 600, padding: '6px 12px',
                       borderRadius: 999, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
                     }}>
