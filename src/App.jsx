@@ -1160,6 +1160,62 @@ async function placeShopifyOrder({ customerEmail, lineItems, note }) {
   }
 }
 
+// ----- Self-signup: create a real Shopify customer in real time --------------
+// Calls the Worker's /v1/shopify/customer route (Admin API). Returns the new
+// (or existing, if the email was already registered) customer record. This is
+// profile creation, not authenticated login — no password is collected or set;
+// the app reads this customer's record + order history via Admin afterward.
+async function createShopifyCustomer({ firstName, lastName, email, zip, city, province }) {
+  const base = _workerBase();
+  if (!base) return { success: false, error: 'No proxy configured' };
+  if (!email) return { success: false, error: 'Email is required' };
+  try {
+    const res = await fetch(`${base}/v1/shopify/customer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ firstName, lastName, email, zip, city, province }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) return { success: false, error: data?.error || `HTTP ${res.status}`, details: data?.details };
+    return { success: true, customer: data?.customer || null, existed: !!data?.existed };
+  } catch (e) {
+    return { success: false, error: String(e?.message || e) };
+  }
+}
+
+// Fetch a self-signup customer's orders via Admin (they have no Storefront
+// token). Normalizes to the SAME shape ShopifyAdapter.getCustomerOrders returns
+// so the rest of the app (Orders page, chat grounding, disruption) is agnostic.
+async function fetchAdminCustomerOrders(customerId) {
+  const base = _workerBase();
+  if (!base || !customerId) return [];
+  try {
+    const res = await fetch(`${base}/v1/shopify/customer-orders?customerId=${encodeURIComponent(customerId)}`);
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.success) return [];
+    const now = Date.now();
+    return (data.orders || []).map(o => {
+      const d = o.processedAt ? new Date(o.processedAt) : new Date();
+      return {
+        id: o.id || null,
+        orderNumber: o.orderNumber,
+        date: d,
+        daysAgo: Math.max(0, Math.floor((now - d.getTime()) / 86400000)),
+        total: o.total || 0,
+        currency: o.currency || 'USD',
+        items: (o.items || []).map(it => ({
+          title: it.title,
+          quantity: it.quantity,
+          handle: null,        // Admin order line-items don't carry the handle
+          category: '',
+          photo: null,
+          price: it.price || 0,
+        })),
+      };
+    });
+  } catch { return []; }
+}
+
 // Pick an in-stock alternate for a cancelled item: same category, closest price,
 // preferring higher rating. Excludes the cancelled product itself.
 function pickAlternate(cancelledItem, catalog) {
@@ -3233,7 +3289,7 @@ const TopBar = () => {
   return (
     <div style={{
       position: 'sticky', top: 0, zIndex: 50,
-      background: 'rgba(5,6,10,0.85)',
+      background: 'rgba(255,255,255,0.85)',
       backdropFilter: 'blur(24px)',
       WebkitBackdropFilter: 'blur(24px)',
       borderBottom: `1px solid ${T.hairline}`,
@@ -3250,7 +3306,7 @@ const TopBar = () => {
             const active = view === 'home';
             return (
               <button onClick={() => setView('home')} style={{
-                background: active ? 'rgba(0,229,255,0.08)' : 'transparent',
+                background: active ? 'rgba(25,70,200,0.08)' : 'transparent',
                 border: active ? `1px solid ${T.cyan}33` : '1px solid transparent',
                 color: active ? T.cyan : T.text2,
                 cursor: 'pointer', padding: '8px 14px', borderRadius: 999,
@@ -3265,7 +3321,7 @@ const TopBar = () => {
             const active = view === k;
             return (
               <button key={k} onClick={() => setView(k)} style={{
-                background: active ? 'rgba(0,229,255,0.08)' : 'transparent',
+                background: active ? 'rgba(25,70,200,0.08)' : 'transparent',
                 border: active ? `1px solid ${T.cyan}33` : '1px solid transparent',
                 color: active ? T.cyan : T.text2,
                 cursor: 'pointer',
@@ -3285,7 +3341,7 @@ const TopBar = () => {
         {isAdmin && <PersonaSwitcher persona={persona} setPersona={setPersona} />}
         {isAnon ? <SignInButton onClick={goToSignIn} /> : <UserPill user={user} onLogout={logout} />}
         <button onClick={() => setView('cart')} style={{
-          background: 'rgba(255,255,255,0.04)',
+          background: 'rgba(15,23,42,0.05)',
           border: `1px solid ${T.hairline}`,
           color: T.text,
           cursor: 'pointer',
@@ -3337,7 +3393,7 @@ const NavCategoriesDropdown = ({ active, setView }) => {
       <button
         onClick={() => setOpen(o => !o)}
         style={{
-          background: active ? 'rgba(0,229,255,0.08)' : 'transparent',
+          background: active ? 'rgba(25,70,200,0.08)' : 'transparent',
           border: active ? `1px solid ${T.cyan}33` : '1px solid transparent',
           color: active ? T.cyan : T.text2,
           cursor: 'pointer',
@@ -3356,7 +3412,7 @@ const NavCategoriesDropdown = ({ active, setView }) => {
           minWidth: 200,
           background: T.ink, border: `1px solid ${T.glassBorderHi}`,
           borderRadius: 8, padding: 6,
-          boxShadow: `0 12px 36px rgba(0,0,0,0.7)`,
+          boxShadow: `0 12px 36px rgba(15,23,42,0.18)`,
         }}>
           {CATEGORY_LIST.map(cat => (
             <button
@@ -3368,7 +3424,7 @@ const NavCategoriesDropdown = ({ active, setView }) => {
                 color: T.text, fontSize: 13, cursor: 'pointer', borderRadius: 4,
                 display: 'flex', alignItems: 'center', gap: 10,
               }}
-              onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
+              onMouseEnter={e => e.currentTarget.style.background = 'rgba(15,23,42,0.06)'}
               onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
             >
               <span style={{ fontSize: 16 }}>{cat.icon}</span>
@@ -3444,7 +3500,7 @@ const UserPill = ({ user, onLogout }) => {
           minWidth: 200,
           background: T.ink, border: `1px solid ${T.glassBorderHi}`,
           borderRadius: 8, padding: 6,
-          boxShadow: `0 12px 36px rgba(0,0,0,0.7)`,
+          boxShadow: `0 12px 36px rgba(15,23,42,0.18)`,
         }}>
           <div style={{ padding: '8px 12px', borderBottom: `1px solid ${T.hairline}` }}>
             <div className="mono" style={{ color: T.text3, fontSize: 10, marginBottom: 4 }}>
@@ -3512,7 +3568,7 @@ const PersonaSwitcher = ({ persona, setPersona }) => {
               WebkitBackdropFilter: 'blur(24px)',
               color: T.text,
               borderRadius: 12, padding: 8, minWidth: 340,
-              boxShadow: `0 24px 80px rgba(0,0,0,0.6), 0 0 0 1px ${T.hairlineStrong}`,
+              boxShadow: `0 24px 80px rgba(15,23,42,0.15), 0 0 0 1px ${T.hairlineStrong}`,
               border: `1px solid ${T.hairlineStrong}`,
             }}>
             <div className="mono" style={{ padding: '10px 12px', color: T.cyan, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -3524,7 +3580,7 @@ const PersonaSwitcher = ({ persona, setPersona }) => {
                 <button key={p.id} onClick={() => { setPersona(p.id); setOpen(false); }} style={{
                   display: 'flex', alignItems: 'center', gap: 14, width: '100%',
                   padding: 12,
-                  background: active ? 'rgba(0,229,255,0.08)' : 'transparent',
+                  background: active ? 'rgba(25,70,200,0.08)' : 'transparent',
                   border: active ? `1px solid ${T.cyan}33` : '1px solid transparent',
                   borderRadius: 8, cursor: 'pointer', textAlign: 'left', marginBottom: 2,
                   color: T.text,
@@ -3556,7 +3612,7 @@ const HOME_HEROES = {
     titleAlt: 'Built for the Hunt.',
     body: 'Glass, blinds, and scent control — everything dialed before opening morning.',
     cta: 'Shop Deer Season',
-    bg: 'linear-gradient(135deg, rgba(20,30,15,0.6) 0%, rgba(40,30,10,0.4) 50%, rgba(15,12,25,0.6) 100%)',
+    bg: 'linear-gradient(135deg, rgba(25,70,200,0.07) 0%, rgba(200,16,46,0.05) 55%, rgba(255,255,255,0) 100%)',
     glow: 'radial-gradient(ellipse 70% 60% at 25% 50%, rgba(200,16,46,0.09) 0%, transparent 65%), radial-gradient(ellipse 50% 40% at 80% 80%, rgba(25,70,200,0.07) 0%, transparent 65%)',
     accent: T.amber,
     image: '🦌',
@@ -3567,8 +3623,8 @@ const HOME_HEROES = {
     titleAlt: 'Starts Here.',
     body: 'Cleats, balls, water bottles — outfit the season in one cart.',
     cta: 'Shop Team Sports',
-    bg: 'linear-gradient(135deg, rgba(15,20,40,0.6) 0%, rgba(20,40,55,0.5) 50%, rgba(20,15,35,0.6) 100%)',
-    glow: 'radial-gradient(ellipse 70% 60% at 25% 50%, rgba(37,99,235,0.32) 0%, transparent 65%), radial-gradient(ellipse 50% 40% at 80% 80%, rgba(25,70,200,0.22) 0%, transparent 65%)',
+    bg: 'linear-gradient(135deg, rgba(25,70,200,0.08) 0%, rgba(37,99,235,0.05) 55%, rgba(255,255,255,0) 100%)',
+    glow: 'radial-gradient(ellipse 70% 60% at 25% 50%, rgba(37,99,235,0.10) 0%, transparent 65%), radial-gradient(ellipse 50% 40% at 80% 80%, rgba(25,70,200,0.07) 0%, transparent 65%)',
     accent: T.cyan,
     image: '⚽',
   },
@@ -3578,7 +3634,7 @@ const HOME_HEROES = {
     titleAlt: 'Save More.',
     body: 'Shoes, weights, and apparel built to train hard and last.',
     cta: 'Shop Deals',
-    bg: 'linear-gradient(135deg, rgba(35,10,25,0.6) 0%, rgba(45,15,30,0.5) 50%, rgba(20,15,35,0.6) 100%)',
+    bg: 'linear-gradient(135deg, rgba(200,16,46,0.07) 0%, rgba(25,70,200,0.05) 55%, rgba(255,255,255,0) 100%)',
     glow: 'radial-gradient(ellipse 70% 60% at 25% 50%, rgba(200,16,46,0.10) 0%, transparent 65%), radial-gradient(ellipse 50% 40% at 80% 80%, rgba(25,70,200,0.08) 0%, transparent 65%)',
     accent: T.pink,
     image: '🏃',
@@ -3591,7 +3647,7 @@ const HOME_HEROES = {
     titleAlt: 'All Year Round.',
     body: 'Browse our full range. Sign in to unlock personalized recommendations across categories.',
     cta: 'Browse the Store',
-    bg: 'linear-gradient(135deg, rgba(15,20,35,0.6) 0%, rgba(25,30,50,0.5) 50%, rgba(20,25,40,0.6) 100%)',
+    bg: 'linear-gradient(135deg, rgba(25,70,200,0.06) 0%, rgba(200,16,46,0.04) 55%, rgba(255,255,255,0) 100%)',
     glow: 'radial-gradient(ellipse 70% 60% at 25% 50%, rgba(25,70,200,0.28) 0%, transparent 65%), radial-gradient(ellipse 50% 40% at 80% 80%, rgba(37,99,235,0.18) 0%, transparent 65%)',
     accent: T.cyan,
     image: '✨',
@@ -3838,8 +3894,8 @@ const ProductCard = ({ product, compact = false, pinned = false }) => {
       onClick={() => { setActiveProduct(product.id); setView('pdp'); }}
       style={{
         background: hover
-          ? 'linear-gradient(135deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0.04) 100%)'
-          : 'linear-gradient(135deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.02) 100%)',
+          ? 'linear-gradient(135deg, rgba(25,70,200,0.06) 0%, rgba(25,70,200,0.02) 100%)'
+          : 'linear-gradient(135deg, rgba(15,23,42,0.03) 0%, rgba(15,23,42,0.015) 100%)',
         backdropFilter: 'blur(20px) saturate(160%)',
         WebkitBackdropFilter: 'blur(20px) saturate(160%)',
         // Pinned products get a violet glow border to visibly differentiate
@@ -3856,8 +3912,8 @@ const ProductCard = ({ product, compact = false, pinned = false }) => {
         boxShadow: pinned
           ? `0 8px 32px ${T.violet}55, 0 0 40px ${T.violet}33, inset 0 1px 0 rgba(255,255,255,0.12)`
           : hover
-            ? `0 20px 50px rgba(0,0,0,0.4), 0 0 60px ${T.violet}33, inset 0 1px 0 rgba(255,255,255,0.15)`
-            : `0 4px 16px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.08)`,
+            ? `0 16px 40px rgba(15,23,42,0.14), 0 0 0 1px ${T.violet}22`
+            : `0 2px 10px rgba(15,23,42,0.08), 0 1px 2px rgba(15,23,42,0.04)`,
         transition: 'box-shadow 0.3s, border-color 0.3s, background 0.3s',
       }}
     >
@@ -3920,7 +3976,7 @@ const CATEGORY_BANNERS = {
       parent: 'Family-friendly outdoor essentials and beginner setups.',
       fitness: 'Outdoor gear that doubles for the gym and the woods.',
     },
-    bg: 'linear-gradient(135deg, #0a1410 0%, #0d2419 100%)',
+    bg: 'linear-gradient(135deg, rgba(25,70,200,0.06) 0%, rgba(255,255,255,0) 100%)',
     glow: `radial-gradient(ellipse at 30% 50%, ${T.amber}22 0%, transparent 60%)`,
   },
   'team-sports': {
@@ -3931,7 +3987,7 @@ const CATEGORY_BANNERS = {
       parent: 'Youth-sized cleats, shin guards, and team-pack savings — back-to-season ready.',
       fitness: 'Performance training tools across soccer, basketball, and baseball.',
     },
-    bg: 'linear-gradient(135deg, #0a1015 0%, #102b3f 100%)',
+    bg: 'linear-gradient(135deg, rgba(25,70,200,0.06) 0%, rgba(255,255,255,0) 100%)',
     glow: `radial-gradient(ellipse at 30% 50%, ${T.cyan}22 0%, transparent 60%)`,
   },
   fitness: {
@@ -3942,7 +3998,7 @@ const CATEGORY_BANNERS = {
       parent: 'Family fitness picks — apparel and equipment that grows with you.',
       fitness: 'Editor-picked deals on running shoes, weights, and apparel — up to 30% off.',
     },
-    bg: 'linear-gradient(135deg, #0e0608 0%, #2a0a0a 100%)',
+    bg: 'linear-gradient(135deg, rgba(25,70,200,0.06) 0%, rgba(255,255,255,0) 100%)',
     glow: `radial-gradient(ellipse at 30% 50%, ${T.red}22 0%, transparent 60%)`,
   },
   camping: {
@@ -3953,7 +4009,7 @@ const CATEGORY_BANNERS = {
       parent: 'Family-friendly tents, cookware, and easy-setup gear.',
       fitness: 'Lightweight, durable kit for trail trips and active outdoors.',
     },
-    bg: 'linear-gradient(135deg, #0d150e 0%, #1a2818 100%)',
+    bg: 'linear-gradient(135deg, rgba(25,70,200,0.06) 0%, rgba(255,255,255,0) 100%)',
     glow: `radial-gradient(ellipse at 30% 50%, ${T.lime}22 0%, transparent 60%)`,
   },
   fishing: {
@@ -3964,7 +4020,7 @@ const CATEGORY_BANNERS = {
       parent: 'Beginner-friendly setups for taking kids out on the water.',
       fitness: 'Active-paddling kayaks, gear, and durable rods for serious anglers.',
     },
-    bg: 'linear-gradient(135deg, #081218 0%, #0d2230 100%)',
+    bg: 'linear-gradient(135deg, rgba(25,70,200,0.06) 0%, rgba(255,255,255,0) 100%)',
     glow: `radial-gradient(ellipse at 30% 50%, ${T.cyan}22 0%, transparent 60%)`,
   },
   // Neutral fallback when no category is loaded (shouldn't normally happen,
@@ -3973,7 +4029,7 @@ const CATEGORY_BANNERS = {
     title: 'Shop the Category',
     sub: 'Browse our full range. Sign in to see picks personalized for you.',
     subByPersona: {},
-    bg: 'linear-gradient(135deg, #0a0d12 0%, #1a1e28 100%)',
+    bg: 'linear-gradient(135deg, rgba(25,70,200,0.06) 0%, rgba(255,255,255,0) 100%)',
     glow: `radial-gradient(ellipse at 30% 50%, ${T.text3}22 0%, transparent 60%)`,
   },
 };
@@ -4231,7 +4287,7 @@ const CategoryPage = () => {
               )}
               {activeChips.length > 0 && <> · {activeChips.length} {activeChips.length === 1 ? 'filter' : 'filters'} applied</>}
             </div>
-            <button style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid ${T.hairline}`, color: T.text2, padding: '8px 14px', fontSize: 12, cursor: 'pointer', borderRadius: 4 }}>Sort: Personalized ▾</button>
+            <button style={{ background: 'rgba(15,23,42,0.05)', border: `1px solid ${T.hairline}`, color: T.text2, padding: '8px 14px', fontSize: 12, cursor: 'pointer', borderRadius: 4 }}>Sort: Personalized ▾</button>
           </div>
 
           {/* Active filter chips */}
@@ -4246,7 +4302,7 @@ const CategoryPage = () => {
                     exit={{ scale: 0.8, opacity: 0 }}
                     onClick={() => toggleFacet(chip.facetId, chip.value)}
                     style={{
-                      background: 'rgba(0,229,255,0.1)',
+                      background: 'rgba(25,70,200,0.1)',
                       color: T.cyan,
                       border: `1px solid ${T.cyan}44`,
                       padding: '6px 10px 6px 12px',
@@ -4620,7 +4676,7 @@ const PDPPage = () => {
               <div key={i} style={{ padding: 24, background: T.ink2, border: `1px solid ${T.hairline}`, borderRadius: 8 }}>
                 <div style={{
                   width: 44, height: 44, borderRadius: '50%',
-                  background: 'rgba(0,229,255,0.12)',
+                  background: 'rgba(25,70,200,0.12)',
                   border: `1px solid ${T.cyan}44`,
                   color: T.cyan,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -4691,7 +4747,7 @@ const PDPPage = () => {
 
 const PDPModule = ({ source, label, children }) => {
   const colors = {
-    PIM: { bg: 'rgba(0,229,255,0.1)', text: T.cyan },
+    PIM: { bg: 'rgba(25,70,200,0.1)', text: T.cyan },
     DAM: { bg: 'rgba(212,161,78,0.12)', text: T.amber },
     'AI-generated': { bg: 'rgba(61,255,165,0.1)', text: T.green },
   };
@@ -5066,7 +5122,7 @@ const ChatWidget = () => {
               WebkitBackdropFilter: 'blur(32px) saturate(180%)',
               border: `1px solid ${T.glassBorderHi}`,
               boxShadow: `
-                0 24px 80px rgba(0,0,0,0.6),
+                0 24px 80px rgba(15,23,42,0.15),
                 0 0 0 1px ${T.violet}33,
                 0 0 80px ${T.violet}22,
                 inset 0 1px 0 rgba(255,255,255,0.1)
@@ -5176,7 +5232,7 @@ const ChatWidget = () => {
                   animate={{ opacity: 1, y: 0 }}
                   style={{
                     alignSelf: 'flex-start',
-                    background: 'rgba(0,229,255,0.06)',
+                    background: 'rgba(25,70,200,0.06)',
                     border: `1px solid ${T.cyan}22`,
                     padding: '12px 16px',
                     borderRadius: '14px 14px 14px 4px',
@@ -5205,7 +5261,7 @@ const ChatWidget = () => {
                         key={s.label}
                         onClick={() => sendMessage(s.label)}
                         style={{
-                          background: 'rgba(255,255,255,0.03)',
+                          background: 'rgba(15,23,42,0.04)',
                           border: `1px solid ${T.hairline}`,
                           color: T.text,
                           padding: '12px 14px',
@@ -5216,8 +5272,8 @@ const ChatWidget = () => {
                           display: 'flex', alignItems: 'center', gap: 10,
                           transition: 'all 0.2s',
                         }}
-                        onMouseEnter={e => { e.currentTarget.style.background = 'rgba(0,229,255,0.08)'; e.currentTarget.style.borderColor = `${T.cyan}44`; }}
-                        onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.03)'; e.currentTarget.style.borderColor = T.hairline; }}
+                        onMouseEnter={e => { e.currentTarget.style.background = 'rgba(25,70,200,0.08)'; e.currentTarget.style.borderColor = `${T.cyan}44`; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'rgba(15,23,42,0.04)'; e.currentTarget.style.borderColor = T.hairline; }}
                       >
                         <span style={{ color: T.cyan }}>{s.icon}</span>
                         {s.label}
@@ -5262,7 +5318,7 @@ const ChatWidget = () => {
             <form onSubmit={e => { e.preventDefault(); sendMessage(input); }} style={{
               padding: '14px 16px 16px',
               borderTop: `1px solid ${T.hairline}`,
-              background: 'rgba(255,255,255,0.02)',
+              background: 'rgba(15,23,42,0.035)',
             }}>
               <div style={{
                 display: 'flex', alignItems: 'center', gap: 8,
@@ -5383,7 +5439,7 @@ const ChatMessage = ({ msg, onProductClick, onAddToCart }) => {
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} style={{ alignSelf: 'flex-start', maxWidth: '92%' }}>
       <div style={{
-        background: 'rgba(255,255,255,0.04)',
+        background: 'rgba(15,23,42,0.05)',
         border: `1px solid ${T.hairline}`,
         padding: '12px 14px',
         borderRadius: '14px 14px 14px 4px',
@@ -5794,7 +5850,7 @@ const VisualSearchPanel = ({ onClose, onResults }) => {
       onClick={() => { stopCamera(); onClose(); }}
       style={{
         position: 'absolute', inset: 0, zIndex: 5,
-        background: 'rgba(5,6,10,0.85)',
+        background: 'rgba(255,255,255,0.85)',
         backdropFilter: 'blur(12px)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         padding: 20,
@@ -6323,7 +6379,7 @@ const OrdersPage = () => {
             <div style={{
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
               padding: '18px 24px', borderBottom: `1px solid ${T.hairline}`,
-              background: 'rgba(255,255,255,0.02)', flexWrap: 'wrap', gap: 12,
+              background: 'rgba(15,23,42,0.035)', flexWrap: 'wrap', gap: 12,
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
                 <div>
@@ -6358,7 +6414,7 @@ const OrdersPage = () => {
                     padding: '12px', cursor: item.handle ? 'pointer' : 'default',
                     textAlign: 'left', transition: 'background 0.15s',
                   }}
-                  onMouseEnter={e => { if (item.handle) e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; }}
+                  onMouseEnter={e => { if (item.handle) e.currentTarget.style.background = 'rgba(15,23,42,0.05)'; }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
                 >
                   {/* Thumbnail */}
@@ -6751,7 +6807,7 @@ const KitBuilder = () => {
                 fontSize: 15,
                 transition: 'all 0.2s',
               }}
-              onMouseEnter={e => { e.currentTarget.style.borderColor = `${T.cyan}44`; e.currentTarget.style.background = 'rgba(0,229,255,0.04)'; }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = `${T.cyan}44`; e.currentTarget.style.background = 'rgba(25,70,200,0.04)'; }}
               onMouseLeave={e => { e.currentTarget.style.borderColor = T.hairline; e.currentTarget.style.background = T.ink2; }}
             >
               <Sparkles size={12} style={{ display: 'inline', marginRight: 10, color: T.cyan, verticalAlign: 'middle' }} />
@@ -7013,7 +7069,7 @@ const DisruptionPanel = () => {
                 cursor: liveSession && busy == null ? 'pointer' : 'not-allowed',
                 opacity: liveSession ? 1 : 0.5, transition: 'all 0.2s',
               }}
-              onMouseEnter={e => { if (liveSession && busy == null) { e.currentTarget.style.borderColor = s.color; e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; } }}
+              onMouseEnter={e => { if (liveSession && busy == null) { e.currentTarget.style.borderColor = s.color; e.currentTarget.style.background = 'rgba(15,23,42,0.05)'; } }}
               onMouseLeave={e => { e.currentTarget.style.borderColor = liveSession ? s.color + '44' : T.hairline; e.currentTarget.style.background = T.ink2; }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: s.color, fontWeight: 700, fontSize: 13, marginBottom: 4 }}>
@@ -7370,7 +7426,7 @@ const MerchTool = () => {
         <div style={{
           padding: '16px 22px',
           borderBottom: `1px solid ${T.hairline}`,
-          background: 'rgba(0,229,255,0.04)',
+          background: 'rgba(25,70,200,0.04)',
           display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         }}>
           <strong style={{ fontSize: 14, color: T.text }}>Commerce Adapter</strong>
@@ -7391,7 +7447,7 @@ const MerchTool = () => {
                   onClick={() => !isActive && switchAdapter(id)}
                   style={{
                     textAlign: 'left',
-                    background: isActive ? 'rgba(0,229,255,0.08)' : T.ink3,
+                    background: isActive ? 'rgba(25,70,200,0.08)' : T.ink3,
                     color: T.text,
                     border: isActive ? `1px solid ${T.cyan}66` : `1px solid ${T.hairline}`,
                     padding: 20,
@@ -7527,7 +7583,7 @@ const MerchTool = () => {
                 </>
               ) : (
                 <button onClick={() => { setEditing(`home-hero-${persona}`); setDraft(text); }} style={{
-                  background: 'rgba(255,255,255,0.04)',
+                  background: 'rgba(15,23,42,0.05)',
                   border: `1px solid ${T.hairline}`,
                   color: T.text,
                   padding: '8px 14px', fontSize: 12, cursor: 'pointer', borderRadius: 6,
@@ -7683,7 +7739,7 @@ const MerchTool = () => {
                   <>
                     <span style={{ flex: 1, color: T.text, fontSize: 13 }}>{mod.title || <em style={{ color: T.text3 }}>(no title)</em>}</span>
                     <button onClick={() => { setEditing(`pdp-title-${personaKey}`); setDraft(mod.title || ''); }} style={{
-                      background: 'rgba(255,255,255,0.04)',
+                      background: 'rgba(15,23,42,0.05)',
                       border: `1px solid ${T.hairline}`,
                       color: T.text2,
                       padding: '6px 12px', fontSize: 11, cursor: 'pointer', borderRadius: 4,
@@ -7796,7 +7852,7 @@ const PdpModuleProductPicker = ({ excludeIds = [], onPick }) => {
         position: 'absolute', top: '100%', left: 0, right: 0, marginTop: 2,
         background: T.ink2, border: `1px solid ${T.violet}66`, borderRadius: 4,
         maxHeight: 220, overflowY: 'auto', zIndex: 10,
-        boxShadow: '0 8px 20px rgba(0,0,0,0.5)',
+        boxShadow: '0 8px 20px rgba(15,23,42,0.12)',
       }}>
         {available.length === 0 ? (
           <div style={{ padding: 10, fontSize: 11, color: T.text3 }}>No matches</div>
@@ -7848,7 +7904,7 @@ const CategoryPinAdder = ({ category, currentPins, onPin }) => {
           minWidth: 280, maxHeight: 260, overflowY: 'auto',
           background: T.ink, border: `1px solid ${T.glassBorderHi}`,
           borderRadius: 8, padding: 6,
-          boxShadow: `0 12px 36px rgba(0,0,0,0.6)`,
+          boxShadow: `0 12px 36px rgba(15,23,42,0.15)`,
         }}>
           {available.slice(0, 12).map(p => (
             <button
@@ -7860,7 +7916,7 @@ const CategoryPinAdder = ({ category, currentPins, onPin }) => {
                 color: T.text, fontSize: 12, cursor: 'pointer', borderRadius: 4,
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
               }}
-              onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
+              onMouseEnter={e => e.currentTarget.style.background = 'rgba(15,23,42,0.06)'}
               onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
             >
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -8002,7 +8058,7 @@ const AdminAssistant = ({ rules, pinnedByCategory, pdpOverrides, onApply, llmEna
           return (
             <div key={i} style={{ alignSelf: 'flex-start', maxWidth: '95%' }}>
               <div style={{
-                background: 'rgba(255,255,255,0.04)',
+                background: 'rgba(15,23,42,0.05)',
                 border: `1px solid ${T.hairline}`,
                 padding: '12px 14px',
                 borderRadius: '12px 12px 12px 4px',
@@ -8018,7 +8074,7 @@ const AdminAssistant = ({ rules, pinnedByCategory, pdpOverrides, onApply, llmEna
                     const isInfo = s.kind === 'info';
                     return (
                       <div key={j} style={{
-                        background: applied ? 'rgba(22,163,74,0.08)' : 'rgba(255,255,255,0.03)',
+                        background: applied ? 'rgba(22,163,74,0.08)' : 'rgba(15,23,42,0.04)',
                         border: `1px solid ${applied ? T.lime + '44' : T.hairline}`,
                         borderRadius: 8,
                         padding: 12,
@@ -8125,7 +8181,7 @@ const AdminAssistant = ({ rules, pinnedByCategory, pdpOverrides, onApply, llmEna
                   key={p}
                   onClick={() => send(p)}
                   style={{
-                    background: 'rgba(255,255,255,0.03)',
+                    background: 'rgba(15,23,42,0.04)',
                     border: `1px solid ${T.hairline}`,
                     color: T.text,
                     padding: '10px 12px', borderRadius: 6,
@@ -8133,7 +8189,7 @@ const AdminAssistant = ({ rules, pinnedByCategory, pdpOverrides, onApply, llmEna
                     transition: 'all 0.15s',
                   }}
                   onMouseEnter={e => { e.currentTarget.style.borderColor = T.cyan + '44'; e.currentTarget.style.background = 'rgba(37,99,235,0.05)'; }}
-                  onMouseLeave={e => { e.currentTarget.style.borderColor = T.hairline; e.currentTarget.style.background = 'rgba(255,255,255,0.03)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = T.hairline; e.currentTarget.style.background = 'rgba(15,23,42,0.04)'; }}
                 >
                   {p}
                 </button>
@@ -8146,7 +8202,7 @@ const AdminAssistant = ({ rules, pinnedByCategory, pdpOverrides, onApply, llmEna
       <form onSubmit={e => { e.preventDefault(); send(input); }} style={{
         padding: '14px 16px 16px',
         borderTop: `1px solid ${T.hairline}`,
-        background: 'rgba(255,255,255,0.02)',
+        background: 'rgba(15,23,42,0.035)',
       }}>
         <div style={{
           display: 'flex', alignItems: 'center', gap: 8,
@@ -8464,6 +8520,7 @@ const loadStoredUser = () => {
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (parsed?.anonymous) return ANON_USER;
+    if (parsed?.dynamic && parsed.user) return parsed.user;   // self-signup user
     // Validate against the user map in case storage is stale or corrupted
     const user = DEMO_USERS[parsed?.username];
     return user || null;
@@ -8476,10 +8533,29 @@ const storeUser = (user) => {
       localStorage.removeItem(AUTH_STORAGE_KEY);
     } else if (user.role === 'anonymous') {
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ anonymous: true }));
+    } else if (user.dynamic) {
+      // Self-signup user — persist the whole object (not in DEMO_USERS).
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ dynamic: true, user }));
     } else {
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ username: user.username }));
     }
   } catch (e) { /* private browsing — ignore */ }
+};
+
+// Self-signup customer profile (Shopify customer record + chosen interest type),
+// persisted separately so a reload keeps the visitor "signed in" as themselves.
+const DYNAMIC_CUSTOMER_KEY = 'aso-demo-dynamic-customer';
+const loadDynamicCustomer = () => {
+  try {
+    const raw = localStorage.getItem(DYNAMIC_CUSTOMER_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+};
+const storeDynamicCustomer = (dc) => {
+  try {
+    if (dc) localStorage.setItem(DYNAMIC_CUSTOMER_KEY, JSON.stringify(dc));
+    else localStorage.removeItem(DYNAMIC_CUSTOMER_KEY);
+  } catch { /* ignore */ }
 };
 
 // =============================================================================
@@ -8487,7 +8563,7 @@ const storeUser = (user) => {
 //   so a presenter can hop between personas fast on stage.
 // =============================================================================
 const LoginPage = () => {
-  const { login, continueAsGuest } = useApp();
+  const { login, continueAsGuest, setAuthView } = useApp();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState(null);
@@ -8664,7 +8740,7 @@ const LoginPage = () => {
           transition: 'all 0.2s',
         }}
         onMouseEnter={e => {
-          e.currentTarget.style.background = 'rgba(255,255,255,0.04)';
+          e.currentTarget.style.background = 'rgba(15,23,42,0.05)';
           e.currentTarget.style.borderColor = T.glassBorderHi;
           e.currentTarget.style.color = T.text;
         }}
@@ -8676,6 +8752,24 @@ const LoginPage = () => {
       >
         Continue as guest →
       </button>
+      <button
+        onClick={() => setAuthView('signup')}
+        style={{
+          width: '100%', maxWidth: 380, marginTop: 12,
+          padding: '13px 16px',
+          background: 'transparent',
+          color: T.violet,
+          border: `1.5px solid ${T.violet}`,
+          fontSize: 13, fontWeight: 700, letterSpacing: 0.5,
+          cursor: 'pointer', borderRadius: 999,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+          transition: 'all 0.2s',
+        }}
+        onMouseEnter={e => { e.currentTarget.style.background = T.violet; e.currentTarget.style.color = 'white'; }}
+        onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = T.violet; }}
+      >
+        Create an account →
+      </button>
       <div style={{ color: T.text3, fontSize: 11, marginTop: 10, textAlign: 'center', maxWidth: 380 }}>
         Browse without signing in. No personalization until you sign in or create an account.
       </div>
@@ -8683,6 +8777,149 @@ const LoginPage = () => {
       <div className="mono" style={{ color: T.text3, fontSize: 11, marginTop: 32, textAlign: 'center', maxWidth: 500 }}>
         Demo accounts · Click a card above to auto-fill and sign in.
       </div>
+    </div>
+  );
+};
+
+// =============================================================================
+//   SIGNUP PAGE — real-time account creation. Submits to the Worker, which
+//   creates a real Shopify customer via the Admin API. On success the visitor
+//   is signed in as themselves; their chosen interest seeds personalization,
+//   and any order they place writes back to their own Shopify record.
+// =============================================================================
+const INTERESTS = [
+  { id: 'hunting', icon: '🦌', label: 'Hunting & Outdoors', sub: 'Scopes, blinds, camo, optics' },
+  { id: 'team',    icon: '⚽', label: 'Team Sports & Family', sub: 'Cleats, balls, youth gear' },
+  { id: 'fitness', icon: '🏃', label: 'Fitness & Training',  sub: 'Apparel, weights, recovery' },
+];
+
+const SignupPage = () => {
+  const { signUp, setAuthView } = useApp();
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [email, setEmail] = useState('');
+  const [zip, setZip] = useState('');
+  const [interest, setInterest] = useState('hunting');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  const inputStyle = {
+    width: '100%', padding: '12px 14px',
+    background: T.void, border: `1px solid ${T.hairlineStrong}`,
+    color: T.text, borderRadius: 8, fontSize: 14,
+    boxSizing: 'border-box',
+  };
+
+  const submit = async (e) => {
+    e?.preventDefault?.();
+    setError(null);
+    if (!email.trim() || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())) {
+      setError('Please enter a valid email address.'); return;
+    }
+    if (!firstName.trim()) { setError('Please enter your first name.'); return; }
+    setBusy(true);
+    const res = await signUp({ firstName: firstName.trim(), lastName: lastName.trim(), email: email.trim(), zip: zip.trim(), interest });
+    setBusy(false);
+    if (!res.ok) setError(res.error || 'Something went wrong creating your account.');
+    // On success the gate unmounts (user is now set) — nothing else to do here.
+  };
+
+  return (
+    <div className="aso-root" style={{
+      minHeight: '100vh',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      padding: '40px 24px',
+      background: `radial-gradient(ellipse at top, ${T.ink2} 0%, ${T.void} 70%)`,
+    }}>
+      <div style={{ textAlign: 'center', marginBottom: 28 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, justifyContent: 'center' }}>
+          <span className="display" style={{ fontSize: 40, fontStyle: 'italic', color: T.text }}>Academy</span>
+          <span className="mono" style={{ color: T.amber, fontSize: 13 }}>Sports + Outdoors</span>
+        </div>
+        <p style={{ color: T.text2, fontSize: 14, marginTop: 10 }}>
+          Create your account — we'll personalize the store to you from the first click.
+        </p>
+      </div>
+
+      <form onSubmit={submit} style={{
+        width: '100%', maxWidth: 440,
+        padding: 28,
+        background: T.glassSurface,
+        backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)',
+        border: `1px solid ${T.glassBorder}`, borderRadius: 14,
+      }}>
+        <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
+          <input style={inputStyle} placeholder="First name" value={firstName} autoComplete="given-name" onChange={e => setFirstName(e.target.value)} />
+          <input style={inputStyle} placeholder="Last name" value={lastName} autoComplete="family-name" onChange={e => setLastName(e.target.value)} />
+        </div>
+        <input style={{ ...inputStyle, marginBottom: 10 }} type="email" placeholder="Email address" value={email} autoComplete="email" onChange={e => setEmail(e.target.value)} />
+        <input style={{ ...inputStyle, marginBottom: 18 }} placeholder="ZIP code (for your nearest store)" value={zip} inputMode="numeric" autoComplete="postal-code" onChange={e => setZip(e.target.value)} />
+
+        <div className="mono" style={{ color: T.text3, fontSize: 11, marginBottom: 10 }}>WHAT ARE YOU SHOPPING FOR?</div>
+        <div style={{ display: 'grid', gap: 8, marginBottom: 20 }}>
+          {INTERESTS.map(it => {
+            const active = interest === it.id;
+            return (
+              <button
+                type="button"
+                key={it.id}
+                onClick={() => setInterest(it.id)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 12,
+                  padding: '12px 14px', textAlign: 'left',
+                  background: active ? `${T.violet}12` : 'transparent',
+                  border: `1.5px solid ${active ? T.violet : T.hairlineStrong}`,
+                  borderRadius: 10, cursor: 'pointer', color: T.text,
+                  transition: 'all 0.15s',
+                }}
+              >
+                <span style={{ fontSize: 24 }}>{it.icon}</span>
+                <span style={{ flex: 1 }}>
+                  <span style={{ display: 'block', fontWeight: 700, fontSize: 14 }}>{it.label}</span>
+                  <span className="mono" style={{ color: T.text3, fontSize: 10 }}>{it.sub}</span>
+                </span>
+                {active && <Check size={18} color={T.violet} strokeWidth={3} />}
+              </button>
+            );
+          })}
+        </div>
+
+        {error && (
+          <div style={{ color: T.red, fontSize: 12, marginBottom: 12, textAlign: 'center' }}>{error}</div>
+        )}
+
+        <button
+          type="submit"
+          disabled={busy}
+          style={{
+            width: '100%', padding: '14px 16px',
+            background: busy ? T.text3 : T.gradHero, color: 'white',
+            border: 0, fontSize: 13, fontWeight: 700, letterSpacing: 1,
+            cursor: busy ? 'wait' : 'pointer', borderRadius: 999,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+            boxShadow: busy ? 'none' : `0 6px 24px ${T.violet}44`,
+          }}
+        >
+          {busy
+            ? <><Loader2 size={15} style={{ animation: 'spin 1s linear infinite' }} /> Creating your account…</>
+            : <>CREATE ACCOUNT <ArrowRight size={14} /></>}
+        </button>
+
+        <div className="mono" style={{ color: T.text3, fontSize: 10, marginTop: 14, textAlign: 'center', lineHeight: 1.5 }}>
+          Creates a real customer on the Shopify store. No password needed for the demo.
+        </div>
+      </form>
+
+      <button
+        onClick={() => setAuthView('login')}
+        style={{
+          marginTop: 18, background: 'transparent', border: 0,
+          color: T.text2, fontSize: 13, cursor: 'pointer',
+          display: 'flex', alignItems: 'center', gap: 6,
+        }}
+      >
+        ← Back to sign in
+      </button>
     </div>
   );
 };
@@ -8907,6 +9144,15 @@ export default function App() {
   const [shopifyOrders, setShopifyOrders] = useState([]);
   const [shopifyLoading, setShopifyLoading] = useState(false);
 
+  // Self-signup customer: a real Shopify customer created at runtime via the
+  // Admin API. When set, it OVERRIDES the seeded-persona Shopify session — the
+  // session profile + order history come from this record instead of one of the
+  // three hardcoded personas. The chosen interest still drives personalization
+  // (category sort, hero, chat tone) via `persona`. Persisted across reloads.
+  const [dynamicCustomer, setDynamicCustomer] = useState(() => loadDynamicCustomer());
+  // Which screen the logged-out gate shows: 'login' or 'signup'.
+  const [authView, setAuthView] = useState('login');
+
   // Lifecycle agent controls. agentFastForward compresses the realistic
   // escalation clock for live demos (1 = real time; 240 = 1 min ≈ 4 hrs).
   // agentConverted flips true when a checkout completes so the agent stops.
@@ -8980,6 +9226,43 @@ export default function App() {
     storeUser(ANON_USER);
   };
 
+  // Self-signup: create a REAL Shopify customer in real time, then sign the
+  // visitor in as themselves. The chosen interest maps to one of the three
+  // personalization profiles (hunter/parent/fitness) so the whole site curates
+  // for them immediately — and any order they place writes back to THEIR Shopify
+  // record (by email), growing their history and feeding the next interaction.
+  const signUp = async ({ firstName, lastName, email, zip, interest }) => {
+    const personaType = ({ hunting: 'hunter', team: 'parent', fitness: 'fitness' })[interest] || 'hunter';
+    const res = await createShopifyCustomer({ firstName, lastName, email, zip });
+    if (!res.success || !res.customer) {
+      return { ok: false, error: res.error || 'Could not create your account' };
+    }
+    const c = res.customer;
+    const profile = {
+      customerId: String(c.id || ''),
+      email: c.email || email,
+      firstName: c.firstName || firstName || '',
+      lastName: c.lastName || lastName || '',
+      displayName: c.firstName || firstName || 'there',
+      address: { zip: c.zip || zip || null, city: c.city || null },
+    };
+    const dc = { profile, personaType, interest };
+    const newUser = {
+      username: profile.email,
+      role: 'customer',
+      persona: personaType,
+      displayName: profile.firstName || 'You',
+      dynamic: true,
+    };
+    setDynamicCustomer(dc);
+    storeDynamicCustomer(dc);
+    setUser(newUser);
+    setPersona(personaType);
+    storeUser(newUser);
+    setView('home');
+    return { ok: true, existed: res.existed };
+  };
+
   // Anonymous user wants to upgrade to a real account. Drops them at the login
   // page but PRESERVES their cart — that's standard ecommerce UX. Without this,
   // signing in mid-checkout would empty the cart and break the conversion.
@@ -9000,6 +9283,9 @@ export default function App() {
     setPendingFilter(null);
     setShopifySession(null);
     setShopifyOrders([]);
+    setDynamicCustomer(null);
+    storeDynamicCustomer(null);
+    setAuthView('login');
     storeUser(null);
   };
 
@@ -9010,9 +9296,33 @@ export default function App() {
   // the storefront falls back to its built-in persona signals.
   useEffect(() => {
     let cancelled = false;
+    const shopifyLive = adapterId === 'shopify' && ADAPTERS.shopify?.live;
+
+    // Self-signup customer takes precedence: the session profile + orders come
+    // from their real Shopify record (read via Admin), not a seeded persona.
+    // No Storefront login — these users have no customer access token.
+    if (dynamicCustomer?.profile && shopifyLive) {
+      setShopifyLoading(true);
+      (async () => {
+        try {
+          const orders = await fetchAdminCustomerOrders(dynamicCustomer.profile.customerId);
+          if (cancelled) return;
+          setShopifySession({ token: null, profile: dynamicCustomer.profile, dynamic: true });
+          setShopifyOrders(orders || []);
+        } catch {
+          if (!cancelled) {
+            setShopifySession({ token: null, profile: dynamicCustomer.profile, dynamic: true });
+            setShopifyOrders([]);
+          }
+        } finally {
+          if (!cancelled) setShopifyLoading(false);
+        }
+      })();
+      return () => { cancelled = true; };
+    }
+
     const personaDef = persona ? PERSONAS[persona] : null;
     const creds = personaDef?.shopify;
-    const shopifyLive = adapterId === 'shopify' && ADAPTERS.shopify?.live;
 
     if (!shopifyLive || !creds) {
       setShopifySession(null);
@@ -9051,7 +9361,7 @@ export default function App() {
     })();
 
     return () => { cancelled = true; };
-  }, [persona, adapterId]);
+  }, [persona, adapterId, dynamicCustomer]);
 
   // ---- Lifecycle agent wiring -------------------------------------------
   // The agent key is the persona's real email (the inbox we send to + the KV
@@ -9071,6 +9381,14 @@ export default function App() {
   // a reload will. Best-effort, swallows errors so it never breaks the UI.
   const refreshShopifyOrders = useCallback(async () => {
     if (adapterId !== 'shopify') return;
+    // Self-signup customer: fetch via Admin (no Storefront token).
+    if (dynamicCustomer?.profile?.customerId) {
+      try {
+        const orders = await fetchAdminCustomerOrders(dynamicCustomer.profile.customerId);
+        setShopifyOrders(orders || []);
+      } catch (e) { console.warn('refreshShopifyOrders (admin) failed:', e); }
+      return;
+    }
     const token = shopifySession?.token;
     if (!token) return;
     try {
@@ -9080,7 +9398,7 @@ export default function App() {
     } catch (e) {
       console.warn('refreshShopifyOrders failed:', e);
     }
-  }, [adapterId, shopifySession?.token]);
+  }, [adapterId, shopifySession?.token, dynamicCustomer]);
 
   // Reset conversion flag whenever a new item is added (a fresh shopping session).
   useEffect(() => {
@@ -9227,6 +9545,7 @@ export default function App() {
 
   const value = {
     user, login, logout, continueAsGuest, goToSignIn,
+    signUp, authView, setAuthView, dynamicCustomer,
     persona, setPersona, view, setView, activeProduct, setActiveProduct,
     cart, addToCart, clearCart, removeFromCart, adapterId, setAdapter,
     llmEnabled, setLlmKey,
@@ -9255,7 +9574,7 @@ export default function App() {
     <AppCtx.Provider value={value}>
       <GlobalStyle />
       {!user ? (
-        <LoginPage />
+        authView === 'signup' ? <SignupPage /> : <LoginPage />
       ) : (
         <div className="aso-root" style={{
           // When chat is docked on the right, shift content left so the page stays visible
