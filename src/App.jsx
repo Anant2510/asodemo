@@ -2445,7 +2445,7 @@ const VoiceMicButton = ({ value, setValue, disabled = false, size = 36, title, o
   const stateBg =
     transcribing ? 'rgba(157,92,255,0.18)' :
     listening    ? 'rgba(255,77,77,0.22)' :
-                   'rgba(255,255,255,0.06)';
+                   'rgba(15,23,42,0.06)';
 
   return (
     <button
@@ -2499,56 +2499,56 @@ const VoiceMicButton = ({ value, setValue, disabled = false, size = 36, title, o
    DESIGN TOKENS
    ============================================================================ */
 const T = {
-  // Base canvas (mesh gradient overlays these)
-  void: '#0b0a14',
-  ink: '#13111f',
-  ink2: '#1a1727',
-  ink3: '#221d33',
+  // Base canvas — academy.com aesthetic: white + soft grays
+  void: '#ffffff',
+  ink: '#fafafa',
+  ink2: '#f4f4f5',
+  ink3: '#e4e4e7',
 
-  // Glass tones
-  glassSurface: 'rgba(255,255,255,0.06)',
-  glassSurfaceHi: 'rgba(255,255,255,0.10)',
-  glassBorder: 'rgba(255,255,255,0.15)',
-  glassBorderHi: 'rgba(255,255,255,0.25)',
+  // Glass tones — semi-opaque white over the light canvas
+  glassSurface: 'rgba(255,255,255,0.75)',
+  glassSurfaceHi: 'rgba(255,255,255,0.92)',
+  glassBorder: 'rgba(15,23,42,0.10)',
+  glassBorderHi: 'rgba(15,23,42,0.18)',
 
-  hairline: 'rgba(255,255,255,0.10)',
-  hairlineStrong: 'rgba(255,255,255,0.18)',
+  hairline: 'rgba(15,23,42,0.10)',
+  hairlineStrong: 'rgba(15,23,42,0.18)',
 
-  // Text
-  text: '#f6f4ff',
-  text2: '#b8b3d4',
-  text3: '#807a9c',
-  text4: '#4a4565',
+  // Text — near-black on white, soft grays for hierarchy
+  text: '#0f172a',
+  text2: '#475569',
+  text3: '#94a3b8',
+  text4: '#cbd5e1',
 
-  // Bold accent palette
-  violet: '#9d5cff',
-  violetDeep: '#6633cc',
-  pink: '#ff4d9e',
-  pinkDeep: '#cc2e75',
-  cyan: '#22d3ee',
-  cyanDeep: '#0e8fa8',
-  amber: '#ffb547',
-  amberDeep: '#d48a1f',
-  lime: '#a3ff5c',
-  red: '#ff5e7a',
-  redDeep: '#cc3854',
-  green: '#a3ff5c',
+  // Accent palette — Academy primary blue, red for sale, deepened warm tones for light bg
+  violet: '#1946c8',
+  violetDeep: '#0e2e8a',
+  pink: '#dc2626',
+  pinkDeep: '#991b1b',
+  cyan: '#0891b2',
+  cyanDeep: '#075985',
+  amber: '#ea580c',
+  amberDeep: '#9a3412',
+  lime: '#16a34a',
+  red: '#dc2626',
+  redDeep: '#991b1b',
+  green: '#16a34a',
 
-  // Illustration linework
-  bone: '#f6f4ff',
-  boneDim: '#d8d3eb',
+  // Illustration linework — flipped: dark linework on light surfaces
+  bone: '#0f172a',
+  boneDim: '#475569',
 
-  // Backwards-compat (alias to dark surfaces)
-  paper: '#13111f',
-  rule: '#1a1727',
-  ruleLight: 'rgba(255,255,255,0.10)',
-  forest: '#1e3a2c',
+  // Backwards-compat (alias to light surfaces)
+  paper: '#ffffff',
+  rule: '#e4e4e7',
+  ruleLight: 'rgba(15,23,42,0.06)',
+  forest: '#15803d',
 
-  // Signature gradients
-  gradHero: 'linear-gradient(135deg, #9d5cff 0%, #ff4d9e 50%, #ffb547 100%)',
-  gradAI: 'linear-gradient(135deg, #22d3ee 0%, #9d5cff 100%)',
-  gradAmber: 'linear-gradient(135deg, #ffb547 0%, #ff4d9e 100%)',
-  gradCool: 'linear-gradient(135deg, #22d3ee 0%, #6633cc 100%)',
+  // Signature gradients — Academy blue-led
+  gradHero: 'linear-gradient(135deg, #1946c8 0%, #2563eb 55%, #3b82f6 100%)',
+  gradAI: 'linear-gradient(135deg, #0891b2 0%, #1946c8 100%)',
+  gradAmber: 'linear-gradient(135deg, #ea580c 0%, #dc2626 100%)',
+  gradCool: 'linear-gradient(135deg, #0891b2 0%, #1946c8 100%)',
 
   display: '"Fraunces", "Playfair Display", Georgia, serif',
   sans: '"Inter Tight", "Helvetica Neue", system-ui, sans-serif',
@@ -2569,15 +2569,15 @@ const GlobalStyle = () => (
       position: relative;
       overflow-x: hidden;
     }
-    /* Mesh gradient backdrop — persistent, slowly drifts */
+    /* Subtle mesh backdrop tuned for white canvas */
     .aso-root::before {
       content: '';
       position: fixed; inset: 0; pointer-events: none; z-index: 0;
       background:
-        radial-gradient(ellipse 80% 60% at 10% 0%, rgba(157,92,255,0.28) 0%, transparent 55%),
-        radial-gradient(ellipse 70% 50% at 90% 30%, rgba(34,211,238,0.18) 0%, transparent 55%),
-        radial-gradient(ellipse 60% 50% at 50% 100%, rgba(255,77,158,0.22) 0%, transparent 60%),
-        radial-gradient(ellipse 70% 60% at 100% 100%, rgba(255,181,71,0.14) 0%, transparent 55%);
+        radial-gradient(ellipse 80% 60% at 10% 0%, rgba(25,70,200,0.06) 0%, transparent 55%),
+        radial-gradient(ellipse 70% 50% at 90% 30%, rgba(8,145,178,0.04) 0%, transparent 55%),
+        radial-gradient(ellipse 60% 50% at 50% 100%, rgba(234,88,12,0.04) 0%, transparent 60%),
+        radial-gradient(ellipse 70% 60% at 100% 100%, rgba(220,38,38,0.03) 0%, transparent 55%);
       animation: mesh-drift 24s ease-in-out infinite alternate;
     }
     @keyframes mesh-drift {
@@ -2598,23 +2598,23 @@ const GlobalStyle = () => (
       border: 1px solid ${T.glassBorder};
     }
     .glass-card {
-      background: linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.03) 100%);
+      background: linear-gradient(135deg, rgba(255,255,255,0.92) 0%, rgba(255,255,255,0.78) 100%);
       backdrop-filter: blur(20px) saturate(160%);
       -webkit-backdrop-filter: blur(20px) saturate(160%);
       border: 1px solid ${T.glassBorder};
-      box-shadow: 0 8px 32px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.1);
+      box-shadow: 0 4px 16px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04);
     }
 
     .grain {
       background-image:
-        radial-gradient(circle at 20% 30%, rgba(255,255,255,0.02) 1px, transparent 1px),
-        radial-gradient(circle at 70% 60%, rgba(255,255,255,0.015) 1px, transparent 1px);
+        radial-gradient(circle at 20% 30%, rgba(15,23,42,0.03) 1px, transparent 1px),
+        radial-gradient(circle at 70% 60%, rgba(15,23,42,0.02) 1px, transparent 1px);
       background-size: 3px 3px, 5px 5px;
     }
     .grid-bg {
       background-image:
-        linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+        linear-gradient(rgba(15,23,42,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(15,23,42,0.04) 1px, transparent 1px);
       background-size: 48px 48px;
     }
 
@@ -3482,7 +3482,7 @@ const PersonaSwitcher = ({ persona, setPersona }) => {
     <div style={{ position: 'relative' }}>
       <button onClick={() => setOpen(o => !o)} style={{
         display: 'flex', alignItems: 'center', gap: 10,
-        background: 'rgba(255,255,255,0.06)',
+        background: 'rgba(15,23,42,0.06)',
         border: `1px solid ${T.hairlineStrong}`,
         color: T.text,
         padding: '6px 6px 6px 14px', borderRadius: 999,
@@ -3557,7 +3557,7 @@ const HOME_HEROES = {
     body: 'Glass, blinds, and scent control — everything dialed before opening morning.',
     cta: 'Shop Deer Season',
     bg: 'linear-gradient(135deg, rgba(20,30,15,0.6) 0%, rgba(40,30,10,0.4) 50%, rgba(15,12,25,0.6) 100%)',
-    glow: 'radial-gradient(ellipse 70% 60% at 25% 50%, rgba(255,181,71,0.35) 0%, transparent 65%), radial-gradient(ellipse 50% 40% at 80% 80%, rgba(163,255,92,0.18) 0%, transparent 65%)',
+    glow: 'radial-gradient(ellipse 70% 60% at 25% 50%, rgba(234,88,12,0.10) 0%, transparent 65%), radial-gradient(ellipse 50% 40% at 80% 80%, rgba(22,163,74,0.08) 0%, transparent 65%)',
     accent: T.amber,
     image: '🦌',
   },
@@ -3579,7 +3579,7 @@ const HOME_HEROES = {
     body: 'Shoes, weights, and apparel built to train hard and last.',
     cta: 'Shop Deals',
     bg: 'linear-gradient(135deg, rgba(35,10,25,0.6) 0%, rgba(45,15,30,0.5) 50%, rgba(20,15,35,0.6) 100%)',
-    glow: 'radial-gradient(ellipse 70% 60% at 25% 50%, rgba(255,77,158,0.38) 0%, transparent 65%), radial-gradient(ellipse 50% 40% at 80% 80%, rgba(255,181,71,0.22) 0%, transparent 65%)',
+    glow: 'radial-gradient(ellipse 70% 60% at 25% 50%, rgba(220,38,38,0.10) 0%, transparent 65%), radial-gradient(ellipse 50% 40% at 80% 80%, rgba(234,88,12,0.08) 0%, transparent 65%)',
     accent: T.pink,
     image: '🏃',
   },
@@ -5294,7 +5294,7 @@ const ChatWidget = () => {
                   }}
                 />
                 <button type="button" onClick={() => setVisualOpen(true)} style={{
-                  background: 'rgba(255,255,255,0.06)',
+                  background: 'rgba(15,23,42,0.06)',
                   border: 0, color: T.text2,
                   width: 32, height: 32, borderRadius: '50%',
                   cursor: 'pointer',
@@ -5305,7 +5305,7 @@ const ChatWidget = () => {
                   <Camera size={14} />
                 </button>
                 <button type="submit" disabled={!input.trim() || loading} style={{
-                  background: (input.trim() && !loading) ? T.gradHero : 'rgba(255,255,255,0.06)',
+                  background: (input.trim() && !loading) ? T.gradHero : 'rgba(15,23,42,0.06)',
                   border: 0,
                   color: (input.trim() && !loading) ? 'white' : T.text3,
                   width: 34, height: 34, borderRadius: '50%',
@@ -5822,7 +5822,7 @@ const VisualSearchPanel = ({ onClose, onResults }) => {
               {cameraOpen ? 'Point your camera at a product' : 'Upload an image to find matches'}
             </div>
           </div>
-          <button onClick={() => { stopCamera(); onClose(); }} style={{ background: 'rgba(255,255,255,0.06)', border: 0, width: 28, height: 28, borderRadius: 6, color: T.text2, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <button onClick={() => { stopCamera(); onClose(); }} style={{ background: 'rgba(15,23,42,0.06)', border: 0, width: 28, height: 28, borderRadius: 6, color: T.text2, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <X size={14} />
           </button>
         </div>
@@ -5879,7 +5879,7 @@ const VisualSearchPanel = ({ onClose, onResults }) => {
                 }}>{cameraError}</div>
                 <button onClick={stopCamera} style={{
                   width: '100%', padding: '10px 16px',
-                  background: 'rgba(255,255,255,0.06)', color: T.text,
+                  background: 'rgba(15,23,42,0.06)', color: T.text,
                   border: `1px solid ${T.hairline}`, borderRadius: 6,
                   fontSize: 12, fontWeight: 600, cursor: 'pointer',
                 }}>Close camera</button>
@@ -5889,7 +5889,7 @@ const VisualSearchPanel = ({ onClose, onResults }) => {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 <button onClick={() => setCapturedDataUrl(null)} style={{
                   padding: '12px 16px',
-                  background: 'rgba(255,255,255,0.06)', color: T.text,
+                  background: 'rgba(15,23,42,0.06)', color: T.text,
                   border: `1px solid ${T.hairline}`, borderRadius: 6,
                   fontSize: 12, fontWeight: 600, cursor: 'pointer',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
@@ -5910,13 +5910,13 @@ const VisualSearchPanel = ({ onClose, onResults }) => {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 10 }}>
                 <button onClick={stopCamera} style={{
                   padding: '12px 16px',
-                  background: 'rgba(255,255,255,0.06)', color: T.text2,
+                  background: 'rgba(15,23,42,0.06)', color: T.text2,
                   border: `1px solid ${T.hairline}`, borderRadius: 6,
                   fontSize: 12, fontWeight: 600, cursor: 'pointer',
                 }}>Cancel</button>
                 <button onClick={captureFrame} disabled={!cameraReady} style={{
                   padding: '12px 16px',
-                  background: cameraReady ? T.gradHero : 'rgba(255,255,255,0.06)',
+                  background: cameraReady ? T.gradHero : 'rgba(15,23,42,0.06)',
                   color: 'white',
                   border: 0, borderRadius: 6,
                   fontSize: 12, fontWeight: 700,
@@ -6713,7 +6713,7 @@ const KitBuilder = () => {
               onClick={() => input.trim() && runAgent(input)}
               disabled={phase === 'thinking' || !input.trim()}
               style={{
-                background: input.trim() && phase !== 'thinking' ? T.gradHero : 'rgba(255,255,255,0.06)',
+                background: input.trim() && phase !== 'thinking' ? T.gradHero : 'rgba(15,23,42,0.06)',
                 color: input.trim() && phase !== 'thinking' ? 'white' : T.text3,
                 border: 0,
                 padding: '12px 22px',
@@ -7335,7 +7335,7 @@ const MerchTool = () => {
                   }}
                 />
                 <button onClick={applyLlmKey} disabled={!llmDraft.trim()} style={{
-                  background: llmDraft.trim() ? T.gradHero : 'rgba(255,255,255,0.06)',
+                  background: llmDraft.trim() ? T.gradHero : 'rgba(15,23,42,0.06)',
                   color: llmDraft.trim() ? 'white' : T.text3,
                   border: 0,
                   padding: '14px 22px', fontSize: 13, fontWeight: 700,
@@ -8177,7 +8177,7 @@ const AdminAssistant = ({ rules, pinnedByCategory, pdpOverrides, onApply, llmEna
             />
           )}
           <button type="submit" disabled={!input.trim() || !llmEnabled} style={{
-            background: (input.trim() && llmEnabled) ? T.gradAI : 'rgba(255,255,255,0.06)',
+            background: (input.trim() && llmEnabled) ? T.gradAI : 'rgba(15,23,42,0.06)',
             border: 0,
             color: (input.trim() && llmEnabled) ? 'white' : T.text3,
             width: 30, height: 30, borderRadius: 6,
