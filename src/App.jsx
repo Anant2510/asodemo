@@ -332,7 +332,9 @@ You are powered by an A2UI (Agent-to-UI) interface — you can BOTH chat AND dri
 
 Current customer persona: ${state.persona} (${PERSONAS[state.persona]?.name})
 Current page: ${state.view}
-Cart items: ${state.cart.length}${state.cart.length > 0 ? ` (IDs: ${state.cart.map(c => c.product?.id).filter(Boolean).join(', ')})` : ''}
+Cart items: ${state.cart.length}${state.cart.length > 0 ? `:
+${state.cart.map(c => `  - "${c.product?.name || c.product?.title || 'item'}" (id: ${c.product?.id})${c.qty > 1 ? ` ×${c.qty}` : ''}`).join('\n')}
+When the user refers to a cart item by description (e.g. "the scope", "the running shoes"), match it to the right product ID above and use that exact id for removeFromCart.` : ''}
 ${state.purchaseHistory && state.purchaseHistory.length > 0 ? `
 === THIS CUSTOMER'S REAL PURCHASE HISTORY (from Shopify) ===
 These are ${PERSONAS[state.persona]?.name}'s actual past orders, pulled live from the store. Ground your recommendations in what they've genuinely bought — reference specific past purchases when it's natural ("Since you picked up the ${state.purchaseHistory[0]?.items?.[0]?.title || 'gear'} a while back…"). Suggest complementary items, refills, upgrades, or the next logical purchase given this history. Do NOT recommend something they already own unless it's a consumable refill.
@@ -1184,7 +1186,7 @@ function reEvaluatedEta(extraDays = 3) {
 // Ask Claude to draft a personalized email for a given scenario. Returns
 // { subject, html, text } or null. Falls back to a templated email if the LLM
 // is unavailable, so the demo never dead-ends.
-async function draftPersonalizedEmail({ scenario, persona, customer, orders, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl }) {
+async function draftPersonalizedEmail({ scenario, persona, customer, orders, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl, inStoreOption }) {
   const pName = customer?.firstName || PERSONAS[persona]?.name || 'there';
   const historyLines = (orders || []).slice(0, 5).map(o =>
     `- ${o.daysAgo != null ? o.daysAgo + ' days ago' : 'recently'}: ${o.items.map(i => i.title).join(', ')} ($${(o.total || 0).toFixed(2)})`
@@ -1193,8 +1195,12 @@ async function draftPersonalizedEmail({ scenario, persona, customer, orders, foc
   const scenarioBrief = {
     delay: alternate
       ? `One of ${pName}'s orders is delayed by ${delayDays || 'several'} days — that's longer than we'd like. New ETA: ${eta}. Apologize briefly, then PROACTIVELY present this in-stock alternative as a faster option: "${alternate?.name}" ($${alternate?.price?.toFixed(2)}). Explain in one line why it's a good match for ${pName}. Tell them they can wait for the original OR accept the alternate (we'll cancel the delayed order and ship the alternate right away) — there will be a button below to accept. Warm, helpful, not corporate.`
-      : `One of ${pName}'s orders is delayed by ${delayDays || 'a few'} days. Reassure them, apologize briefly, give the new estimated delivery date: ${eta}. Offer a small good-will gesture (free expedited shipping on the next order). Keep it warm and confident, not corporate.`,
-    cancel: `An item in ${pName}'s order had to be cancelled (out of stock): "${focusItem?.title}". Apologize, and proactively recommend this in-stock alternative we can ship right away: "${alternate?.name}" ($${alternate?.price?.toFixed(2)}). Explain in one line why it's a good match. Offer to swap it with one click.`,
+      : (inStoreOption
+        ? `One of ${pName}'s orders is delayed by ${delayDays || 'a few'} days. New ETA: ${eta}. Apologize briefly, then OFFER a faster in-store pickup option: "${focusItem?.title}" is on the shelf at our ${inStoreOption.store.name}${inStoreOption.isHome ? ' (their home store)' : ''} location — ${inStoreOption.store.address}, open ${inStoreOption.store.hours}. They can grab it today, no shipping wait. Frame it as a friendly local heads-up, not a downgrade. Mention the address and hours clearly so they can act on it.`
+        : `One of ${pName}'s orders is delayed by ${delayDays || 'a few'} days. Reassure them, apologize briefly, give the new estimated delivery date: ${eta}. Offer a small good-will gesture (free expedited shipping on the next order). Keep it warm and confident, not corporate.`),
+    cancel: inStoreOption
+      ? `An item in ${pName}'s online order had to be cancelled because we're out of stock online: "${focusItem?.title}". Be honest about this, then give them TWO clear options: (1) The same item IS available right now at our ${inStoreOption.store.name} store${inStoreOption.isHome ? ' (their home store)' : ''} — ${inStoreOption.store.address}, open ${inStoreOption.store.hours} — they can pick it up the same day. (2) OR we can ship them this in-stock alternative right away: "${alternate?.name}" ($${alternate?.price?.toFixed(2)}). Present both options clearly, let ${pName} pick. The accept-alternate button below handles option 2.`
+      : `An item in ${pName}'s order had to be cancelled (out of stock everywhere): "${focusItem?.title}". Apologize, and proactively recommend this in-stock alternative we can ship right away: "${alternate?.name}" ($${alternate?.price?.toFixed(2)}). Explain in one line why it's a good match. Offer to swap it with one click.`,
     backInStock: `An item ${pName} bought before is popular and back in stock: "${focusItem?.title}". Let them know it's available again at their ${homeStore?.city || 'local'} store, in case they want to restock.`,
     winBack: `${pName} hasn't ordered in a while. Write a friendly win-back note referencing what they bought before, with a light incentive (10% off their category) to come back. No guilt, just warmth.`,
     priceDrop: `The price dropped on something ${pName} bought or viewed: "${focusItem?.title}". Let them know it's now on sale and worth grabbing again or gifting.`,
@@ -1215,7 +1221,7 @@ Return ONLY valid JSON, no preamble, no markdown fences:
 
   const usingProxy = Boolean(LLM_CONFIG.proxyUrl);
   if (!LLM_CONFIG.enabled) {
-    return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl });
+    return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl, inStoreOption });
   }
   const url = usingProxy ? LLM_CONFIG.proxyUrl : 'https://api.anthropic.com/v1/messages';
   const headers = usingProxy
@@ -1233,13 +1239,13 @@ Return ONLY valid JSON, no preamble, no markdown fences:
         messages: [{ role: 'user', content: 'Write the email now. Return only the JSON.' }],
       }),
     });
-    if (!res.ok) return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl });
+    if (!res.ok) return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl, inStoreOption });
     const data = await res.json();
     const textBlock = (data.content || []).find(b => b.type === 'text')?.text || '';
     const jsonStr = textBlock.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(jsonStr);
     if (!parsed.subject || (!parsed.html && !parsed.text)) {
-      return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl });
+      return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl, inStoreOption });
     }
     // For delay-with-alternate: append a CTA button to the LLM-drafted HTML.
     // We don't trust the LLM to format the swap URL exactly right, so we own this.
@@ -1251,12 +1257,12 @@ Return ONLY valid JSON, no preamble, no markdown fences:
     return parsed;
   } catch (e) {
     console.warn('Email draft LLM failed, using fallback:', e.message);
-    return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl });
+    return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl, inStoreOption });
   }
 }
 
 // Templated fallback so a flaky LLM never breaks the demo.
-function _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl }) {
+function _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl, inStoreOption }) {
   const sign = '<p>— The Academy Sports + Outdoors Team</p>';
   const ctaButton = (acceptSwapUrl && alternate)
     ? `<p style="margin-top:24px"><a href="${acceptSwapUrl}" style="display:inline-block;padding:14px 28px;background:#22d3ee;color:#0a0a0f;border-radius:999px;text-decoration:none;font-weight:700">Accept the alternate — ship now</a></p><p style="color:#888;font-size:12px;margin-top:8px">Clicking the button cancels the delayed order and ships ${alternate.name} right away.</p>`
@@ -1276,8 +1282,21 @@ function _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore,
           ctaButton, ctaText
         );
       }
+      if (inStoreOption) {
+        return wrap(
+          `Your order is delayed — but it's on our shelf nearby`,
+          `<p>Hi ${pName},</p><p>Your recent order is running about ${delayDays || 'a few'} days behind — sorry about that. New ETA: <strong>${eta}</strong>.</p><p>Heads up: "${focusItem?.title}" is on the shelf at our <strong>${inStoreOption.store.name}</strong>${inStoreOption.isHome ? ' (your home store)' : ''} location right now. If you'd rather pick it up today instead of waiting:</p><p style="margin:14px 0;padding:12px 14px;background:#f5f7ff;border-radius:8px;font-size:14px"><strong>${inStoreOption.store.name}</strong><br/>${inStoreOption.store.address}<br/><span style="color:#666">${inStoreOption.store.hours}</span></p>`
+        );
+      }
       return wrap(`A quick update on your order`, `<p>Hi ${pName},</p><p>Your recent order is running a little behind — we're sorry for the wait. Your updated delivery date is <strong>${eta}</strong>. To make up for it, your next order ships expedited on us.</p>`);
     case 'cancel':
+      if (inStoreOption) {
+        return wrap(
+          `"${focusItem?.title}" — out online, but in stock locally`,
+          `<p>Hi ${pName},</p><p>Bad news first: "${focusItem?.title}" sold out online before we could ship it. Two ways we can make it right:</p><p style="margin:14px 0;padding:12px 14px;background:#f5f7ff;border-radius:8px;font-size:14px"><strong>Option 1 · Pick it up locally</strong><br/>The same item is on the shelf at <strong>${inStoreOption.store.name}</strong>${inStoreOption.isHome ? ' (your home store)' : ''}<br/>${inStoreOption.store.address}<br/><span style="color:#666">${inStoreOption.store.hours}</span></p><p style="margin:14px 0;padding:12px 14px;background:#fff5f0;border-radius:8px;font-size:14px"><strong>Option 2 · We ship you an alternative</strong><br/><strong>${alternate?.name}</strong> · $${alternate?.price?.toFixed(2)} — in stock and ready to go.</p>`,
+          ctaButton, ctaText
+        );
+      }
       return wrap(`We've got a great alternative for you`, `<p>Hi ${pName},</p><p>Unfortunately "${focusItem?.title}" sold out before we could ship it. The good news: <strong>${alternate?.name}</strong> ($${alternate?.price?.toFixed(2)}) is in stock and a great match — we can ship it right away. Just reply or tap to swap.</p>`);
     case 'backInStock':
       return wrap(`Back in stock at your store`, `<p>Hi ${pName},</p><p>"${focusItem?.title}" is back in stock${homeStore ? ` at ${homeStore.name}` : ''} — grab it before it's gone again.</p>`);
@@ -4364,9 +4383,14 @@ const PDP_CONTENT = {
 };
 
 const PDPPage = () => {
-  const { persona, activeProduct, setView, addToCart, adapterId, setPendingFilter, pdpOverrides } = useApp();
+  const { persona, activeProduct, setView, addToCart, removeFromCart, cart, adapterId, setPendingFilter, pdpOverrides, shopifySession } = useApp();
   const [product, setProduct] = useState(null);
   const [activePhotoIdx, setActivePhotoIdx] = useState(0);
+  // Delivery promise — live per-location stock vs. the persona's home store (zip).
+  // Mirrors Kit Builder's pattern. Mock adapter returns null and we omit the line.
+  const [delivery, setDelivery] = useState(null);
+  const customerZip = shopifySession?.profile?.address?.zip || '77024';
+  const homeStore = zipToStore(customerZip);
   const pKey = personaKey(persona);
   const isAnon = !persona;
   // Default to persona's hero SKU if no specific product set
@@ -4377,6 +4401,22 @@ const PDPPage = () => {
       setActivePhotoIdx(0);   // reset gallery to first image when product changes
     });
   }, [targetId, adapterId]);
+  // Live inventory by location for the delivery promise. Refetches when the
+  // product or adapter changes; silently no-ops on Mock (returns null).
+  useEffect(() => {
+    let cancelled = false;
+    setDelivery(null);
+    if (typeof adapter.getInventoryByLocation !== 'function') return;
+    (async () => {
+      try {
+        const inv = await adapter.getInventoryByLocation(targetId);
+        if (cancelled) return;
+        const promise = deliveryPromise(inv, homeStore);
+        if (promise) setDelivery(promise);
+      } catch { /* omit promise on error */ }
+    })();
+    return () => { cancelled = true; };
+  }, [targetId, adapterId, homeStore?.id]);
   if (!product) return <div style={{ padding: 80, textAlign: 'center', color: T.text2 }}>Loading…</div>;
 
   // PDP personalized module — base from constants, overlay any admin override.
@@ -4484,21 +4524,87 @@ const PDPPage = () => {
                 ))}
               </div>
             )}
-            <button onClick={() => addToCart(product, 1)} style={{
-              marginTop: 36, width: '100%',
-              background: T.gradHero, color: 'white',
-              border: 0, padding: '20px 28px',
-              fontWeight: 700, fontSize: 14,
-              cursor: 'pointer', letterSpacing: 1,
-              borderRadius: 999,
-              boxShadow: `0 8px 32px ${T.violet}55, 0 0 60px ${T.pink}33, inset 0 1px 0 rgba(255,255,255,0.25)`,
-              transition: 'all 0.2s',
-            }}
-            onMouseEnter={e => { e.currentTarget.style.boxShadow = `0 12px 48px ${T.violet}77, 0 0 80px ${T.pink}55, inset 0 1px 0 rgba(255,255,255,0.3)`; e.currentTarget.style.transform = 'translateY(-2px)'; }}
-            onMouseLeave={e => { e.currentTarget.style.boxShadow = `0 8px 32px ${T.violet}55, 0 0 60px ${T.pink}33, inset 0 1px 0 rgba(255,255,255,0.25)`; e.currentTarget.style.transform = 'translateY(0)'; }}
-            >
-              ADD TO CART — ${product.price.toFixed(2)}
-            </button>
+            {/* Delivery promise — driven by the persona's stored Shopify address (zip → home store). */}
+            {delivery && (() => {
+              const toneColor = delivery.tone === 'good' ? T.lime : delivery.tone === 'ok' ? T.amber : T.red;
+              return (
+                <div style={{
+                  marginTop: 28,
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '11px 14px',
+                  background: `${toneColor}10`,
+                  border: `1px solid ${toneColor}44`,
+                  borderRadius: 12,
+                  fontSize: 13, fontFamily: T.mono, color: toneColor,
+                }}>
+                  <MapPin size={14} />
+                  <span style={{ color: T.text }}>{delivery.label}</span>
+                  {homeStore?.zip && <span style={{ color: T.text3, marginLeft: 'auto', fontSize: 11 }}>· based on {homeStore.zip}</span>}
+                </div>
+              );
+            })()}
+
+            {/* Add to Cart / Remove — flips when this product is already in the cart. */}
+            {(() => {
+              const cartLine = cart?.find(i => i.product?.id === product.id) || null;
+              const inCart = !!cartLine;
+              if (!inCart) {
+                return (
+                  <button onClick={() => addToCart(product, 1)} style={{
+                    marginTop: 18, width: '100%',
+                    background: T.gradHero, color: 'white',
+                    border: 0, padding: '20px 28px',
+                    fontWeight: 700, fontSize: 14,
+                    cursor: 'pointer', letterSpacing: 1,
+                    borderRadius: 999,
+                    boxShadow: `0 8px 32px ${T.violet}55, 0 0 60px ${T.pink}33, inset 0 1px 0 rgba(255,255,255,0.25)`,
+                    transition: 'all 0.2s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.boxShadow = `0 12px 48px ${T.violet}77, 0 0 80px ${T.pink}55, inset 0 1px 0 rgba(255,255,255,0.3)`; e.currentTarget.style.transform = 'translateY(-2px)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.boxShadow = `0 8px 32px ${T.violet}55, 0 0 60px ${T.pink}33, inset 0 1px 0 rgba(255,255,255,0.25)`; e.currentTarget.style.transform = 'translateY(0)'; }}
+                  >
+                    ADD TO CART — ${product.price.toFixed(2)}
+                  </button>
+                );
+              }
+              // In cart: primary becomes "View cart", with a Remove text-button beneath.
+              return (
+                <div style={{ marginTop: 18 }}>
+                  <button onClick={() => setView('cart')} style={{
+                    width: '100%',
+                    background: `linear-gradient(135deg, ${T.lime}, ${T.cyan})`, color: '#0a0a0f',
+                    border: 0, padding: '20px 28px',
+                    fontWeight: 700, fontSize: 14,
+                    cursor: 'pointer', letterSpacing: 1,
+                    borderRadius: 999,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+                    boxShadow: `0 8px 32px ${T.lime}44, 0 0 60px ${T.cyan}22, inset 0 1px 0 rgba(255,255,255,0.25)`,
+                    transition: 'all 0.2s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; }}
+                  >
+                    <Check size={16} /> IN CART · {cartLine.qty} ADDED — VIEW CART <ArrowRight size={16} />
+                  </button>
+                  <button
+                    onClick={() => removeFromCart(product.id)}
+                    style={{
+                      marginTop: 10, width: '100%',
+                      background: 'transparent', color: T.text3,
+                      border: `1px solid ${T.hairline}`, padding: '10px 16px',
+                      fontSize: 12, fontWeight: 600, letterSpacing: 1,
+                      cursor: 'pointer', borderRadius: 999,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                      transition: 'all 0.15s',
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.color = T.red; e.currentTarget.style.borderColor = `${T.red}66`; }}
+                    onMouseLeave={e => { e.currentTarget.style.color = T.text3; e.currentTarget.style.borderColor = T.hairline; }}
+                  >
+                    <X size={12} /> REMOVE FROM CART
+                  </button>
+                </div>
+              );
+            })()}
           </PDPModule>
         </div>
 
@@ -6058,6 +6164,18 @@ const OrdersPage = () => {
     const alternate = needAlternate ? pickAlternate(focusItem, CATALOG) : null;
     const eta = scenario === 'delay' ? reEvaluatedEta(effectiveDelay) : null;
 
+    // BOPIS option — only worth checking when the email might mention store pickup:
+    // - cancel: always (online out-of-stock but maybe on a store shelf)
+    // - delay <= 3 days: yes (alternate path supersedes BOPIS for >3 days delays)
+    let inStoreOption = null;
+    const considerInStore = scenario === 'cancel' || (scenario === 'delay' && effectiveDelay <= 3);
+    if (considerInStore && focusItem?.handle && typeof adapter.getInventoryByLocation === 'function') {
+      try {
+        const inv = await adapter.getInventoryByLocation(focusItem.handle);
+        inStoreOption = findInStoreStock(inv, homeStore);
+      } catch { /* omit BOPIS on error */ }
+    }
+
     // Build the swap-accept URL only for delay-with-alternate (cancel doesn't need it
     // — cancel emails describe the swap as already happening, no user click required).
     const acceptSwapUrl = (scenario === 'delay' && alternate && order.id && alternate.shopifyVariantId)
@@ -6083,6 +6201,7 @@ const OrdersPage = () => {
       homeStore,
       delayDays: effectiveDelay,
       acceptSwapUrl,
+      inStoreOption,
     });
 
     const sendRes = await sendEmail({
@@ -6095,8 +6214,12 @@ const OrdersPage = () => {
     const successMsg = scenario === 'delay'
       ? (acceptSwapUrl
           ? `Delay email sent (${effectiveDelay}d) — alternate offered: ${alternate?.name}`
-          : `Delay email sent — new ETA ${eta}`)
-      : `Cancel email sent — offered ${alternate?.name || 'an alternate'}`;
+          : inStoreOption
+            ? `Delay email sent (${effectiveDelay}d) — pickup offered at ${inStoreOption.store.name}`
+            : `Delay email sent — new ETA ${eta}`)
+      : (inStoreOption
+          ? `Cancel email sent — pickup at ${inStoreOption.store.name} + alternate ${alternate?.name}`
+          : `Cancel email sent — offered ${alternate?.name || 'an alternate'}`);
 
     setDisruption(d => ({
       ...d,
@@ -6337,11 +6460,13 @@ const OrdersPage = () => {
 
 // Map a customer ZIP to the nearest of our 4 stores. Coarse first-3-digit
 // heuristic — good enough for the demo's Texas-centric ZIPs.
+// Physical store metadata. address + hours are demo placeholders — swap for the
+// real store records when you have them; the BOPIS email copy uses these verbatim.
 const STORE_BY_ID = {
-  shop:    { id: 'shop',    name: 'Shop location',    city: 'Online',  zip: null },
-  houston: { id: 'houston', name: 'Houston Memorial', city: 'Houston', zip: '77024' },
-  cypress: { id: 'cypress', name: 'Cypress',          city: 'Cypress', zip: '77433' },
-  plano:   { id: 'plano',   name: 'Plano',            city: 'Plano',   zip: '75024' },
+  shop:    { id: 'shop',    name: 'Online warehouse', city: 'Online',  zip: null,    address: null,                                hours: null },
+  houston: { id: 'houston', name: 'Houston Memorial', city: 'Houston', zip: '77024', address: '20140 Eastex Fwy, Houston, TX 77024',  hours: 'Mon–Sat 9 AM – 9 PM · Sun 10 AM – 7 PM' },
+  cypress: { id: 'cypress', name: 'Cypress',          city: 'Cypress', zip: '77433', address: '25803 Northwest Fwy, Cypress, TX 77433', hours: 'Mon–Sat 9 AM – 9 PM · Sun 10 AM – 7 PM' },
+  plano:   { id: 'plano',   name: 'Plano',            city: 'Plano',   zip: '75024', address: '5900 W Park Blvd, Plano, TX 75093',       hours: 'Mon–Sat 9 AM – 9 PM · Sun 10 AM – 7 PM' },
 };
 function zipToStore(zip) {
   const z = String(zip || '').slice(0, 5);
@@ -6369,6 +6494,26 @@ function deliveryPromise(inv, homeStore) {
     return { label: `Ships from warehouse · 3–5 days`, tone: 'ok', qty: online.qty };
   }
   return { label: 'Backordered', tone: 'bad', qty: 0 };
+}
+
+// Find the best physical store where this product is on the shelf right now.
+// Used by the disruption emails to offer a BOPIS (pickup) option:
+//   - Prefer the customer's home store
+//   - Fall back to any other physical store (NOT the 'shop' online warehouse)
+//   - Returns null if it's only available online / nowhere — caller omits BOPIS.
+function findInStoreStock(inv, homeStore) {
+  if (!inv || !inv.locations || !homeStore) return null;
+  const atHome = inv.locations.find(l => l.id === homeStore.id && l.qty > 0);
+  if (atHome) {
+    const s = STORE_BY_ID[atHome.id];
+    return s ? { store: s, qty: atHome.qty, isHome: true } : null;
+  }
+  const elsewhere = inv.locations.find(l => l.qty > 0 && l.id !== 'shop');
+  if (elsewhere) {
+    const s = STORE_BY_ID[elsewhere.id];
+    return s ? { store: s, qty: elsewhere.qty, isHome: false } : null;
+  }
+  return null;
 }
 
 const KitBuilder = () => {
@@ -6772,9 +6917,19 @@ const DisruptionPanel = () => {
     const alternate = scenario === 'cancel' ? pickAlternate(focusItem, CATALOG) : null;
     const eta = scenario === 'delay' ? reEvaluatedEta(3) : null;
 
+    // BOPIS: for the panel, default delay = 3 days, so BOPIS applies for both delay & cancel.
+    let inStoreOption = null;
+    const considerInStore = scenario === 'delay' || scenario === 'cancel';
+    if (considerInStore && focusItem?.handle && typeof adapter.getInventoryByLocation === 'function') {
+      try {
+        const inv = await adapter.getInventoryByLocation(focusItem.handle);
+        inStoreOption = findInStoreStock(inv, homeStore);
+      } catch { /* omit BOPIS on error */ }
+    }
+
     const email = await draftPersonalizedEmail({
       scenario, persona, customer: profile, orders: shopifyOrders,
-      focusItem, alternate, eta, homeStore,
+      focusItem, alternate, eta, homeStore, delayDays: 3, inStoreOption,
     });
     const res = await sendEmail({ to: recipientEmail, subject: email.subject, html: email.html, text: email.text });
     setBusy(null);
