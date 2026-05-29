@@ -8975,6 +8975,8 @@ function useLifecycleAgent({ enabled, agentKey, cart, persona, profile, orders, 
   const stateRef = useRef({});   // { [productId]: { addedAt, stage, lastEmailAt } }
   const acceptedRef = useRef({}); // { [productId]: true } once accepted via link
   const lastSyncRef = useRef(0);
+  const lastSyncSigRef = useRef(null); // signature of the last cart we WROTE to KV
+  const lastReadRef = useRef(0);       // last time we READ KV for discount acceptance
 
   useEffect(() => {
     if (!enabled || !agentKey) return;
@@ -8996,15 +8998,10 @@ function useLifecycleAgent({ enabled, agentKey, cart, persona, profile, orders, 
         return;
       }
 
-      // Sync cart snapshot to KV periodically (so the cron agent can continue).
-      if (now - lastSyncRef.current > 15000) {
-        lastSyncRef.current = now;
-        agentSyncState({
-          key: agentKey,
-          cart: lines.map(l => ({ id: l.product?.id, title: l.product?.name, price: l.product?.price, addedAt: l.addedAt || now })),
-          converted: false,
-        });
-        // Poll KV for email-link acceptance → apply discount in-app.
+      // READ poll (cheap — KV reads are ~10M/day) every 15s to detect
+      // email-link discount acceptance and apply it in-app.
+      if (now - lastReadRef.current > 15000) {
+        lastReadRef.current = now;
         const remote = await agentReadState(agentKey);
         if (remote?.items) {
           for (const [id, st] of Object.entries(remote.items)) {
@@ -9014,6 +9011,25 @@ function useLifecycleAgent({ enabled, agentKey, cart, persona, profile, orders, 
             }
           }
         }
+      }
+
+      // WRITE to KV only when the cart actually CHANGED since our last write.
+      // KV free tier allows just 1,000 writes/day; a fixed 15s write cadence
+      // exhausts that in ~4 hours of open tabs (and most writes were redundant
+      // empty/unchanged snapshots). Writing on-change cuts writes by >95% —
+      // typically just a handful per shopping session. A slow heartbeat keeps a
+      // lingering non-empty cart's entry fresh so the cron always sees it.
+      const sig = JSON.stringify(lines.map(l => [l.product?.id, l.qty]));
+      const sigChanged = sig !== lastSyncSigRef.current;
+      const heartbeatDue = lines.length > 0 && (now - lastSyncRef.current > 300000); // 5 min
+      if (sigChanged || heartbeatDue) {
+        lastSyncRef.current = now;
+        lastSyncSigRef.current = sig;
+        agentSyncState({
+          key: agentKey,
+          cart: lines.map(l => ({ id: l.product?.id, title: l.product?.name, price: l.product?.price, addedAt: l.addedAt || now })),
+          converted: false,
+        });
       }
 
       // Escalation per cart line.
