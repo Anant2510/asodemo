@@ -3563,7 +3563,7 @@ const PersonaSwitcher = ({ persona, setPersona }) => {
             exit={{ opacity: 0, y: -8, scale: 0.96 }}
             style={{
               position: 'absolute', top: 'calc(100% + 10px)', right: 0,
-              background: 'rgba(10,12,18,0.92)',
+              background: 'rgba(255,255,255,0.97)',
               backdropFilter: 'blur(24px)',
               WebkitBackdropFilter: 'blur(24px)',
               color: T.text,
