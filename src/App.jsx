@@ -5253,7 +5253,7 @@ const ChatWidget = () => {
               {messages.length === 1 && !loading && (
                 <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} style={{ marginTop: 6 }}>
                   <div className="mono" style={{ color: T.text3, marginBottom: 10, fontSize: 9 }}>
-                    {(shopifyOrders?.length || 0) > 0 ? 'Suggested for you' : 'Try asking'}
+                    {(shopifyOrders?.length || 0) > 0 ? 'Personalized Recommendations for You' : 'Try asking'}
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     {chips.map(s => (
