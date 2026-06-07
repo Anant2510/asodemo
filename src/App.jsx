@@ -1656,6 +1656,38 @@ const SHOPIFY_CONFIG = {
   apiVersion: '2024-07',
 };
 
+// =============================================================================
+//   SHOPIFY CATEGORY INFERENCE
+//   Shopify productType is free-text and often inconsistent (blank, mistyped,
+//   or not matching our 5 canonical categories), which can leak e.g. a rifle
+//   onto the Fitness page. So we DON'T trust productType alone — we infer the
+//   canonical category from the product title + tags (reliable), and fall back
+//   to a normalized productType only when title/tags are inconclusive.
+// =============================================================================
+const CATEGORY_KEYWORDS = [
+  ['hunting',     ['rifle','firearm',' gun','shotgun','ammo','ammunition','scope','optic','binocular','crossbow','broadhead','arrow','blind','decoy','deer','hunt','camo','treestand','game call','muzzle','holster','ravin','ruger']],
+  ['fishing',     ['fishing','rod','reel','lure','tackle',' bait','hook','angler','kayak','spinning combo','baitcast']],
+  ['team-sports', ['soccer','jersey','cleat','shin guard','shinguard','baseball','basketball','football','volleyball','youth','goalkeeper','team bundle']],
+  ['fitness',     ['treadmill','dumbbell','kettlebell','barbell','weight','yoga','running','runner',' run ','cardio','fitness','workout','resistance','peloton','indoor cycle','spin bike','watch',' gps','tracker','foam roller','strength']],
+  ['camping',     ['tent','cooler','sleeping bag','sleeping','campsite',' camp ','camping','lantern','stove','hammock','backpack','hydration','headlamp','canopy']],
+];
+const PRODUCTTYPE_NORMALIZE = {
+  'hunting':'hunting','hunt':'hunting','firearms':'hunting','optics':'hunting',
+  'fishing':'fishing',
+  'team sports':'team-sports','team-sports':'team-sports','teamsports':'team-sports','sports':'team-sports',
+  'fitness':'fitness','fitness & training':'fitness','fitness and training':'fitness','training':'fitness',
+  'camping':'camping','outdoor':'camping','outdoors':'camping','camp':'camping',
+};
+function inferShopifyCategory(productType, title, tags) {
+  const hay = ` ${(title || '').toLowerCase()} ${(tags || []).join(' ').toLowerCase()} `;
+  for (const [cat, words] of CATEGORY_KEYWORDS) {
+    if (words.some(w => hay.includes(w))) return cat;
+  }
+  const raw = (productType || '').toLowerCase().trim();
+  if (PRODUCTTYPE_NORMALIZE[raw]) return PRODUCTTYPE_NORMALIZE[raw];
+  return 'general';
+}
+
 class ShopifyAdapter extends CommerceAdapter {
   constructor(config) {
     super();
@@ -1795,7 +1827,7 @@ class ShopifyAdapter extends CommerceAdapter {
     const allImages = (node.images?.edges || []).map(e => e?.node?.url).filter(Boolean);
     const photo = allImages[0] || null;
     const tags = Array.isArray(node.tags) ? node.tags : [];
-    const category = (node.productType || '').toLowerCase() || 'general';
+    const category = inferShopifyCategory(node.productType, node.title, tags);
     // Try to infer subcategory from tags (we tagged products like "footwear", "soccer", etc. in the CSV)
     const subcategoryHint = tags.find(t => ['footwear', 'soccer', 'baseball', 'basketball', 'crossbows', 'optics', 'apparel', 'shelter', 'coolers', 'rods', 'reels'].includes(t.toLowerCase()));
     return {
