@@ -3438,8 +3438,9 @@ const TopBar = () => {
       color: T.text,
     }}>
       <div style={{ maxWidth: 1400, margin: '0 auto', padding: '16px 32px', display: 'flex', alignItems: 'center', gap: 32 }}>
-        <button onClick={() => setView('home')} style={{ background: 'none', border: 0, color: T.text, cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center' }}>
-          <img src={`${import.meta.env.BASE_URL}academy-logo.png`} alt="Academy Sports + Outdoors" style={{ height: 56, width: 'auto', display: 'block' }} />
+        <button onClick={() => setView('home')} style={{ background: 'none', border: 0, color: T.text, cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <img src={`${import.meta.env.BASE_URL}academy-icon-wordmark.png`} alt="Academy" style={{ height: 48, width: 'auto', display: 'block' }} />
+          <span className="mono" style={{ color: T.amber, fontSize: 13 }}>Sports + Outdoors</span>
         </button>
         <nav style={{ display: 'flex', gap: 4, fontSize: 13, fontWeight: 500, marginLeft: 16 }}>
           {/* Home */}
@@ -8863,8 +8864,9 @@ const LoginPage = () => {
       background: `radial-gradient(ellipse at top, ${T.ink2} 0%, ${T.void} 70%)`,
     }}>
       <div style={{ textAlign: 'center', marginBottom: 40 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <img src={`${import.meta.env.BASE_URL}academy-logo.png`} alt="Academy Sports + Outdoors" style={{ height: 110, width: 'auto', display: 'block' }} />
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14 }}>
+          <img src={`${import.meta.env.BASE_URL}academy-icon-wordmark.png`} alt="Academy" style={{ height: 90, width: 'auto', display: 'block' }} />
+          <span className="mono" style={{ color: T.amber, fontSize: 16 }}>Sports + Outdoors</span>
         </div>
         <p style={{ color: T.text2, fontSize: 14, marginTop: 12 }}>
           Sign in to see your personalized experience.
@@ -9091,8 +9093,9 @@ const SignupPage = () => {
       background: `radial-gradient(ellipse at top, ${T.ink2} 0%, ${T.void} 70%)`,
     }}>
       <div style={{ textAlign: 'center', marginBottom: 28 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <img src={`${import.meta.env.BASE_URL}academy-logo.png`} alt="Academy Sports + Outdoors" style={{ height: 96, width: 'auto', display: 'block' }} />
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
+          <img src={`${import.meta.env.BASE_URL}academy-icon-wordmark.png`} alt="Academy" style={{ height: 78, width: 'auto', display: 'block' }} />
+          <span className="mono" style={{ color: T.amber, fontSize: 14 }}>Sports + Outdoors</span>
         </div>
         <p style={{ color: T.text2, fontSize: 14, marginTop: 10 }}>
           Create your account — we'll personalize the store to you from the first click.
