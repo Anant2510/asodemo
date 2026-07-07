@@ -3438,8 +3438,8 @@ const TopBar = () => {
       color: T.text,
     }}>
       <div style={{ maxWidth: 1400, margin: '0 auto', padding: '16px 32px', display: 'flex', alignItems: 'center', gap: 32 }}>
-        <button onClick={() => setView('home')} style={{ background: 'none', border: 0, color: T.text, cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
-          <img src={`${import.meta.env.BASE_URL}academy-logo.png`} alt="Academy Sports + Outdoors" style={{ height: 40, width: 'auto', display: 'block' }} />
+        <button onClick={() => setView('home')} style={{ background: 'none', border: 0, color: T.text, cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center' }}>
+          <img src={`${import.meta.env.BASE_URL}academy-logo.png`} alt="Academy Sports + Outdoors" style={{ height: 56, width: 'auto', display: 'block' }} />
         </button>
         <nav style={{ display: 'flex', gap: 4, fontSize: 13, fontWeight: 500, marginLeft: 16 }}>
           {/* Home */}
