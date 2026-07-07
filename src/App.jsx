@@ -1242,6 +1242,27 @@ function reEvaluatedEta(extraDays = 3) {
 // Ask Claude to draft a personalized email for a given scenario. Returns
 // { subject, html, text } or null. Falls back to a templated email if the LLM
 // is unavailable, so the demo never dead-ends.
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+// Email-safe product image card. Table-based layout (not flex/grid — Gmail and
+// Outlook have poor CSS support) and the image is sized via the WIDTH ATTRIBUTE
+// rather than CSS, since that's what actually gets respected across clients.
+// Gracefully renders nothing when there's no photo (e.g. Admin-API order items
+// that don't carry an image) — we never want a broken-image icon in a customer
+// email, so no photo just means no card, and the text still reads fine alone.
+function emailProductCard(product, { label } = {}) {
+  if (!product?.photo) return '';
+  const name = escapeHtml(product.name || product.title || 'Product');
+  const priceVal = product.price;
+  const price = (priceVal != null && !Number.isNaN(Number(priceVal))) ? `$${Number(priceVal).toFixed(2)}` : '';
+  return `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:14px 0;background:#f5f7ff;border-radius:10px;width:100%;max-width:420px"><tr>
+<td style="padding:12px;width:112px;vertical-align:top"><img src="${product.photo}" width="100" alt="${name}" style="display:block;border-radius:8px;max-width:100px;height:auto" /></td>
+<td style="padding:12px 12px 12px 0;vertical-align:middle">${label ? `<div style="font-size:11px;font-weight:700;color:#2563eb;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">${escapeHtml(label)}</div>` : ''}<div style="font-weight:700;font-size:14px;color:#111">${name}</div>${price ? `<div style="color:#555;font-size:13px;margin-top:2px">${price}</div>` : ''}</td>
+</tr></table>`;
+}
+
 async function draftPersonalizedEmail({ scenario, persona, customer, orders, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl, inStoreOption }) {
   const pName = customer?.firstName || PERSONAS[persona]?.name || 'there';
   const historyLines = (orders || []).slice(0, 5).map(o =>
@@ -1305,6 +1326,15 @@ Return ONLY valid JSON, no preamble, no markdown fences:
     }
     // For delay-with-alternate: append a CTA button to the LLM-drafted HTML.
     // We don't trust the LLM to format the swap URL exactly right, so we own this.
+    // Always attach the relevant product photo(s) — code-owned (not left to the
+    // LLM) so the email is reliably "properly personalized" with a real image,
+    // same rationale as why the CTA button below is code-owned, not LLM-authored.
+    const imageHtml = [
+      inStoreOption ? emailProductCard(focusItem, { label: 'Available for pickup' }) : '',
+      alternate ? emailProductCard(alternate, { label: 'In stock — ships now' }) : '',
+    ].filter(Boolean).join('');
+    if (imageHtml) parsed.html = (parsed.html || '') + imageHtml;
+
     if (acceptSwapUrl && alternate) {
       const cta = `<p style="margin-top:24px"><a href="${acceptSwapUrl}" style="display:inline-block;padding:14px 28px;background:#2563eb;color:#0a0a0f;border-radius:999px;text-decoration:none;font-weight:700">Accept the alternate — ship now</a></p><p style="color:#888;font-size:12px;margin-top:8px">Clicking the button cancels the delayed order and ships ${alternate.name} right away.</p>`;
       parsed.html = (parsed.html || '') + cta;
@@ -1335,31 +1365,32 @@ function _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore,
         return wrap(
           `Your order is delayed — here's a faster option`,
           `<p>Hi ${pName},</p><p>Your recent order is running ${delayDays || 'several'} days behind — we're sorry. Updated ETA: <strong>${eta}</strong>.</p><p>If you'd rather not wait, we have <strong>${alternate?.name}</strong> ($${alternate?.price?.toFixed(2)}) in stock and can ship it right away. We'll cancel the delayed order and you keep the savings.</p>`,
-          ctaButton, ctaText
+          emailProductCard(alternate, { label: 'In stock — ships now' }) + ctaButton, ctaText
         );
       }
       if (inStoreOption) {
         return wrap(
           `Your order is delayed — but it's on our shelf nearby`,
-          `<p>Hi ${pName},</p><p>Your recent order is running about ${delayDays || 'a few'} days behind — sorry about that. New ETA: <strong>${eta}</strong>.</p><p>Heads up: "${focusItem?.title}" is on the shelf at our <strong>${inStoreOption.store.name}</strong>${inStoreOption.isHome ? ' (your home store)' : ''} location right now. If you'd rather pick it up today instead of waiting:</p><p style="margin:14px 0;padding:12px 14px;background:#f5f7ff;border-radius:8px;font-size:14px"><strong>${inStoreOption.store.name}</strong><br/>${inStoreOption.store.address}<br/><span style="color:#666">${inStoreOption.store.hours}</span></p>`
+          `<p>Hi ${pName},</p><p>Your recent order is running about ${delayDays || 'a few'} days behind — sorry about that. New ETA: <strong>${eta}</strong>.</p><p>Heads up: "${focusItem?.title}" is on the shelf at our <strong>${inStoreOption.store.name}</strong>${inStoreOption.isHome ? ' (your home store)' : ''} location right now. If you'd rather pick it up today instead of waiting:</p><p style="margin:14px 0;padding:12px 14px;background:#f5f7ff;border-radius:8px;font-size:14px"><strong>${inStoreOption.store.name}</strong><br/>${inStoreOption.store.address}<br/><span style="color:#666">${inStoreOption.store.hours}</span></p>`,
+          emailProductCard(focusItem, { label: 'Available for pickup' })
         );
       }
-      return wrap(`A quick update on your order`, `<p>Hi ${pName},</p><p>Your recent order is running a little behind — we're sorry for the wait. Your updated delivery date is <strong>${eta}</strong>. To make up for it, your next order ships expedited on us.</p>`);
+      return wrap(`A quick update on your order`, `<p>Hi ${pName},</p><p>Your recent order is running a little behind — we're sorry for the wait. Your updated delivery date is <strong>${eta}</strong>. To make up for it, your next order ships expedited on us.</p>`, emailProductCard(focusItem, { label: 'Your order' }));
     case 'cancel':
       if (inStoreOption) {
         return wrap(
           `"${focusItem?.title}" — out online, but in stock locally`,
           `<p>Hi ${pName},</p><p>Bad news first: "${focusItem?.title}" sold out online before we could ship it. Two ways we can make it right:</p><p style="margin:14px 0;padding:12px 14px;background:#f5f7ff;border-radius:8px;font-size:14px"><strong>Option 1 · Pick it up locally</strong><br/>The same item is on the shelf at <strong>${inStoreOption.store.name}</strong>${inStoreOption.isHome ? ' (your home store)' : ''}<br/>${inStoreOption.store.address}<br/><span style="color:#666">${inStoreOption.store.hours}</span></p><p style="margin:14px 0;padding:12px 14px;background:#fff5f0;border-radius:8px;font-size:14px"><strong>Option 2 · We ship you an alternative</strong><br/><strong>${alternate?.name}</strong> · $${alternate?.price?.toFixed(2)} — in stock and ready to go.</p>`,
-          ctaButton, ctaText
+          emailProductCard(focusItem, { label: 'Option 1 — pick up locally' }) + emailProductCard(alternate, { label: 'Option 2 — ships to you' }) + ctaButton, ctaText
         );
       }
-      return wrap(`We've got a great alternative for you`, `<p>Hi ${pName},</p><p>Unfortunately "${focusItem?.title}" sold out before we could ship it. The good news: <strong>${alternate?.name}</strong> ($${alternate?.price?.toFixed(2)}) is in stock and a great match — we can ship it right away. Just reply or tap to swap.</p>`);
+      return wrap(`We've got a great alternative for you`, `<p>Hi ${pName},</p><p>Unfortunately "${focusItem?.title}" sold out before we could ship it. The good news: <strong>${alternate?.name}</strong> ($${alternate?.price?.toFixed(2)}) is in stock and a great match — we can ship it right away. Just reply or tap to swap.</p>`, emailProductCard(alternate, { label: 'Shipping to you instead' }));
     case 'backInStock':
-      return wrap(`Back in stock at your store`, `<p>Hi ${pName},</p><p>"${focusItem?.title}" is back in stock${homeStore ? ` at ${homeStore.name}` : ''} — grab it before it's gone again.</p>`);
+      return wrap(`Back in stock at your store`, `<p>Hi ${pName},</p><p>"${focusItem?.title}" is back in stock${homeStore ? ` at ${homeStore.name}` : ''} — grab it before it's gone again.</p>`, emailProductCard(focusItem, { label: 'Back in stock' }));
     case 'winBack':
       return wrap(`We miss you, ${pName}`, `<p>Hi ${pName},</p><p>It's been a while! Here's 10% off your next order to welcome you back.</p>`);
     case 'priceDrop':
-      return wrap(`Price drop on something you love`, `<p>Hi ${pName},</p><p>"${focusItem?.title}" just dropped in price — now's a great time to grab another.</p>`);
+      return wrap(`Price drop on something you love`, `<p>Hi ${pName},</p><p>"${focusItem?.title}" just dropped in price — now's a great time to grab another.</p>`, emailProductCard(focusItem, { label: 'Price drop' }));
     default:
       return wrap(`An update from Academy`, `<p>Hi ${pName},</p><p>We've got an update on your account.</p>`);
   }
@@ -1656,6 +1687,38 @@ const SHOPIFY_CONFIG = {
   apiVersion: '2024-07',
 };
 
+// =============================================================================
+//   SHOPIFY CATEGORY INFERENCE
+//   Shopify productType is free-text and often inconsistent (blank, mistyped,
+//   or not matching our 5 canonical categories), which can leak e.g. a rifle
+//   onto the Fitness page. So we DON'T trust productType alone — we infer the
+//   canonical category from the product title + tags (reliable), and fall back
+//   to a normalized productType only when title/tags are inconclusive.
+// =============================================================================
+const CATEGORY_KEYWORDS = [
+  ['hunting',     ['rifle','firearm',' gun','shotgun','ammo','ammunition','scope','optic','binocular','crossbow','broadhead','arrow','blind','decoy','deer','hunt','camo','treestand','game call','muzzle','holster','ravin','ruger']],
+  ['fishing',     ['fishing','rod','reel','lure','tackle',' bait','hook','angler','kayak','spinning combo','baitcast']],
+  ['team-sports', ['soccer','jersey','cleat','shin guard','shinguard','baseball','basketball','football','volleyball','youth','goalkeeper','team bundle']],
+  ['fitness',     ['treadmill','dumbbell','kettlebell','barbell','weight','yoga','running','runner',' run ','cardio','fitness','workout','resistance','peloton','indoor cycle','spin bike','watch',' gps','tracker','foam roller','strength']],
+  ['camping',     ['tent','cooler','sleeping bag','sleeping','campsite',' camp ','camping','lantern','stove','hammock','backpack','hydration','headlamp','canopy']],
+];
+const PRODUCTTYPE_NORMALIZE = {
+  'hunting':'hunting','hunt':'hunting','firearms':'hunting','optics':'hunting',
+  'fishing':'fishing',
+  'team sports':'team-sports','team-sports':'team-sports','teamsports':'team-sports','sports':'team-sports',
+  'fitness':'fitness','fitness & training':'fitness','fitness and training':'fitness','training':'fitness',
+  'camping':'camping','outdoor':'camping','outdoors':'camping','camp':'camping',
+};
+function inferShopifyCategory(productType, title, tags) {
+  const hay = ` ${(title || '').toLowerCase()} ${(tags || []).join(' ').toLowerCase()} `;
+  for (const [cat, words] of CATEGORY_KEYWORDS) {
+    if (words.some(w => hay.includes(w))) return cat;
+  }
+  const raw = (productType || '').toLowerCase().trim();
+  if (PRODUCTTYPE_NORMALIZE[raw]) return PRODUCTTYPE_NORMALIZE[raw];
+  return 'general';
+}
+
 class ShopifyAdapter extends CommerceAdapter {
   constructor(config) {
     super();
@@ -1795,7 +1858,7 @@ class ShopifyAdapter extends CommerceAdapter {
     const allImages = (node.images?.edges || []).map(e => e?.node?.url).filter(Boolean);
     const photo = allImages[0] || null;
     const tags = Array.isArray(node.tags) ? node.tags : [];
-    const category = (node.productType || '').toLowerCase() || 'general';
+    const category = inferShopifyCategory(node.productType, node.title, tags);
     // Try to infer subcategory from tags (we tagged products like "footwear", "soccer", etc. in the CSV)
     const subcategoryHint = tags.find(t => ['footwear', 'soccer', 'baseball', 'basketball', 'crossbows', 'optics', 'apparel', 'shelter', 'coolers', 'rods', 'reels'].includes(t.toLowerCase()));
     return {
@@ -7103,6 +7166,123 @@ const DisruptionPanel = () => {
 /* ============================================================================
    MERCHANDISER ADMIN
    ============================================================================ */
+// =============================================================================
+//   DEMO MODE CONTROL — hidden admin toggle (lives in the admin-only Merch Tool)
+//   Flips the worker's durable demo-mode flag on/off via the authenticated admin
+//   endpoint, and shows today's AI / KV usage against the caps. The ADMIN_TOKEN
+//   is entered at runtime and kept in sessionStorage — never baked into the
+//   public bundle (so it can't be read from DevTools).
+// =============================================================================
+const DEMO_TOKEN_KEY = 'demo-admin-token';
+
+const DemoModeControl = () => {
+  const [token, setToken] = useState(() => { try { return sessionStorage.getItem(DEMO_TOKEN_KEY) || ''; } catch { return ''; } });
+  const [tokenInput, setTokenInput] = useState('');
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const base = (typeof _workerBase === 'function') ? _workerBase() : '';
+
+  const call = async (qs) => {
+    if (!base) { setError('No proxy URL configured.'); return; }
+    setLoading(true); setError(null);
+    try {
+      const res = await fetch(`${base}/v1/admin/${qs}`);
+      if (res.status === 401) { setError('Invalid admin token.'); setStatus(null); return; }
+      const data = await res.json().catch(() => null);
+      if (data) setStatus(data);
+    } catch { setError('Could not reach the worker.'); }
+    finally { setLoading(false); }
+  };
+  const refresh = (tok) => { const t = tok ?? token; if (t) call(`status?token=${encodeURIComponent(t)}`); };
+  const toggle  = (mode) => { if (token) call(`demo?token=${encodeURIComponent(token)}&mode=${mode}`); };
+
+  useEffect(() => { if (token) refresh(token); /* on mount only */ }, []); // eslint-disable-line
+
+  const unlock = () => {
+    const t = tokenInput.trim(); if (!t) return;
+    try { sessionStorage.setItem(DEMO_TOKEN_KEY, t); } catch {}
+    setToken(t); setTokenInput(''); refresh(t);
+  };
+  const forget = () => {
+    try { sessionStorage.removeItem(DEMO_TOKEN_KEY); } catch {}
+    setToken(''); setStatus(null); setError(null);
+  };
+
+  const on = status?.demoMode === 'on';
+  const u = status?.usage;
+
+  return (
+    <div style={{
+      marginTop: 24, padding: '16px 18px',
+      background: T.glassSurface, border: `1px solid ${T.hairlineStrong}`,
+      borderRadius: 12, maxWidth: 620,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+        <Settings size={15} color={T.text2} />
+        <span style={{ fontWeight: 700, fontSize: 14, color: T.text }}>Demo Mode</span>
+        <span className="mono" style={{ fontSize: 9, color: T.text3, border: `1px solid ${T.hairline}`, borderRadius: 999, padding: '1px 7px' }}>ADMIN</span>
+        {status && (
+          <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700, color: on ? T.green : T.text3 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: on ? T.green : T.text3 }} />
+            {on ? 'ON' : 'OFF'}
+          </span>
+        )}
+      </div>
+      <p style={{ fontSize: 12, color: T.text2, margin: '0 0 12px', lineHeight: 1.5 }}>
+        Controls AI + KV usage. When off, the storefront still browses but the AI, email, and lifecycle agent are paused.
+      </p>
+
+      {!token ? (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            type="password" placeholder="Admin token" value={tokenInput}
+            onChange={e => setTokenInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') unlock(); }}
+            style={{ flex: 1, padding: '9px 12px', background: T.void, border: `1px solid ${T.hairlineStrong}`, borderRadius: 8, color: T.text, fontSize: 13 }}
+          />
+          <button onClick={unlock} style={{ padding: '9px 16px', background: T.violet, color: '#fff', border: 0, borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>Unlock</button>
+        </div>
+      ) : (
+        <div>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button
+              onClick={() => toggle(on ? 'off' : 'on')}
+              disabled={loading}
+              style={{
+                padding: '10px 18px', border: 0, borderRadius: 999, cursor: loading ? 'wait' : 'pointer',
+                fontSize: 13, fontWeight: 700, color: '#fff',
+                background: on ? T.red : T.green,
+                display: 'inline-flex', alignItems: 'center', gap: 8,
+              }}>
+              {loading ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : null}
+              {on ? 'Turn demo OFF' : 'Turn demo ON'}
+            </button>
+            <button onClick={() => refresh()} disabled={loading}
+              style={{ padding: '10px 14px', background: 'transparent', border: `1px solid ${T.hairlineStrong}`, borderRadius: 999, color: T.text2, fontSize: 12, cursor: 'pointer' }}>
+              Refresh
+            </button>
+            <button onClick={forget}
+              style={{ marginLeft: 'auto', background: 'transparent', border: 0, color: T.text3, fontSize: 11, cursor: 'pointer', textDecoration: 'underline' }}>
+              Forget token
+            </button>
+          </div>
+          {u && (
+            <div className="mono" style={{ marginTop: 12, fontSize: 11, color: T.text2, lineHeight: 1.7 }}>
+              AI calls: <strong style={{ color: u.aiCalls >= u.aiCap ? T.red : T.text }}>{u.aiCalls}/{u.aiCap}</strong>
+              {'   ·   '}
+              KV writes: <strong style={{ color: u.kvWrites >= u.kvCap ? T.red : T.text }}>{u.kvWrites}/{u.kvCap}</strong>
+              <br />
+              <span style={{ color: T.text3 }}>resets {u.resetsAtUtc ? new Date(u.resetsAtUtc).toLocaleString() : 'at UTC midnight'}</span>
+            </div>
+          )}
+        </div>
+      )}
+      {error && <div style={{ marginTop: 10, fontSize: 12, color: T.red }}>{error}</div>}
+    </div>
+  );
+};
+
 const MerchTool = () => {
   // pinnedByCategory and heroOverrides are now lifted to App context so the
   // storefront (HomePage, CategoryPage) can see them. MerchTool reads + writes
@@ -7275,6 +7455,8 @@ const MerchTool = () => {
       <p style={{ fontSize: 15, color: T.text2, maxWidth: 620, lineHeight: 1.55 }}>
         Edit homepage banners, swap commerce backends, and configure the AI assistant. All changes are live.
       </p>
+
+      <DemoModeControl />
 
       <AnimatePresence>
         {(saved || adapterSaved || llmSaved) && (
