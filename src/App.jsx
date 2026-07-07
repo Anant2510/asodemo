@@ -1069,7 +1069,11 @@ async function sendEmail({ to, subject, html, text }) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return { success: false, error: data?.error || `Email failed (${res.status})` };
-    return { success: true, id: data?.id || null };
+    // `to` here is the ACTUAL final recipient the worker sent to (it may differ
+    // from the `to` we requested if a demo TEST_EMAIL_OVERRIDE is redirecting
+    // everything to one test inbox) — callers should display this, not the
+    // locally-known intended recipient, so the UI never shows a misleading address.
+    return { success: true, id: data?.id || null, to: Array.isArray(data?.to) ? data.to[0] : (data?.to || to) };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -1239,21 +1243,68 @@ function escapeHtml(s) {
   return String(s || '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 }
 
-// Email-safe product image card. Table-based layout (not flex/grid — Gmail and
-// Outlook have poor CSS support) and the image is sized via the WIDTH ATTRIBUTE
-// rather than CSS, since that's what actually gets respected across clients.
-// Gracefully renders nothing when there's no photo (e.g. Admin-API order items
-// that don't carry an image) — we never want a broken-image icon in a customer
-// email, so no photo just means no card, and the text still reads fine alone.
-function emailProductCard(product, { label } = {}) {
-  if (!product?.photo) return '';
-  const name = escapeHtml(product.name || product.title || 'Product');
-  const priceVal = product.price;
-  const price = (priceVal != null && !Number.isNaN(Number(priceVal))) ? `$${Number(priceVal).toFixed(2)}` : '';
-  return `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:14px 0;background:#f5f7ff;border-radius:10px;width:100%;max-width:420px"><tr>
-<td style="padding:12px;width:112px;vertical-align:top"><img src="${product.photo}" width="100" alt="${name}" style="display:block;border-radius:8px;max-width:100px;height:auto" /></td>
-<td style="padding:12px 12px 12px 0;vertical-align:middle">${label ? `<div style="font-size:11px;font-weight:700;color:#2563eb;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px">${escapeHtml(label)}</div>` : ''}<div style="font-weight:700;font-size:14px;color:#111">${name}</div>${price ? `<div style="color:#555;font-size:13px;margin-top:2px">${price}</div>` : ''}</td>
+// Shared "photo + name" unit reused inside both the standalone product card
+// and each row of the comparison table below. Gracefully degrades to plain
+// bold text if there's no photo (e.g. Admin-API order items that don't carry
+// an image) — never show a broken-image icon in a customer email.
+function productMiniHtml(product) {
+  const name = escapeHtml(product?.name || product?.title || 'Item');
+  if (!product?.photo) return `<span style="font-weight:700;color:#111;font-size:14px">${name}</span>`;
+  return `<table role="presentation" cellpadding="0" cellspacing="0"><tr>
+<td style="width:54px;padding-right:10px"><img src="${product.photo}" width="44" alt="${name}" style="display:block;border-radius:6px;max-width:44px;height:auto" /></td>
+<td style="vertical-align:middle;font-weight:700;color:#111;font-size:14px">${name}</td>
 </tr></table>`;
+}
+
+// Color-coded status pill — red for delayed, grey for cancelled/unavailable,
+// green for in-stock/ready-to-ship, blue for in-store pickup. Used in both the
+// single-item card and every row of the comparison table so delayed/cancelled
+// vs. available-now is instantly scannable, not just stated in prose.
+const STATUS_TONE = {
+  delay:   { bg: '#fef2f2', fg: '#b91c1c' },
+  cancel:  { bg: '#f3f4f6', fg: '#4b5563' },
+  instock: { bg: '#f0fdf4', fg: '#15803d' },
+  pickup:  { bg: '#eff6ff', fg: '#1d4ed8' },
+};
+function statusPill(text, tone = 'instock') {
+  if (!text) return '';
+  const s = STATUS_TONE[tone] || STATUS_TONE.instock;
+  return `<span style="display:inline-block;padding:4px 10px;border-radius:999px;background:${s.bg};color:${s.fg};font-size:12px;font-weight:700;white-space:nowrap">${escapeHtml(text)}</span>`;
+}
+
+// Single-item card: photo + name, price, and a clear delivery/status pill.
+// Table-based layout (not flex/grid — Gmail and Outlook have poor CSS support)
+// and the image is sized via the WIDTH ATTRIBUTE, which is what actually gets
+// respected across clients, not CSS width.
+function emailProductCard(product, { label, price, status, statusTone } = {}) {
+  if (!product) return '';
+  const priceVal = price != null ? price : product.price;
+  const priceHtml = (priceVal != null && !Number.isNaN(Number(priceVal))) ? `$${Number(priceVal).toFixed(2)}` : '';
+  return `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:14px 0;background:#f7f8fb;border:1px solid #e5e7eb;border-radius:10px;width:100%;max-width:460px"><tr><td style="padding:14px">
+${label ? `<div style="font-size:11px;font-weight:700;color:#2563eb;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:8px">${escapeHtml(label)}</div>` : ''}${productMiniHtml(product)}
+<div style="margin-top:10px">${priceHtml ? `<span style="font-weight:700;color:#111;font-size:15px;margin-right:10px">${priceHtml}</span>` : ''}${statusPill(status, statusTone)}</div>
+</td></tr></table>`;
+}
+
+// Side-by-side comparison table for exchange scenarios — the core ask: clearly
+// show what's delayed/cancelled right next to what's available now, with the
+// price and a concrete delivery date/status for EACH, in one scannable table
+// rather than leaving the comparison to prose alone.
+function emailComparisonTable(rows) {
+  const trs = rows.filter(Boolean).map(r => {
+    const priceVal = r.price != null ? r.price : r.product?.price;
+    const priceHtml = (priceVal != null && !Number.isNaN(Number(priceVal))) ? `$${Number(priceVal).toFixed(2)}` : '—';
+    return `<tr>
+<td style="padding:12px 14px;border-top:1px solid #e5e7eb">${r.label ? `<div style="font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px">${escapeHtml(r.label)}</div>` : ''}${productMiniHtml(r.product)}</td>
+<td style="padding:12px 14px;border-top:1px solid #e5e7eb;font-weight:700;color:#111;font-size:14px;white-space:nowrap;vertical-align:middle">${priceHtml}</td>
+<td style="padding:12px 14px;border-top:1px solid #e5e7eb;vertical-align:middle">${statusPill(r.status, r.statusTone)}</td>
+</tr>`;
+  }).join('');
+  return `<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;max-width:540px;margin:16px 0;border-collapse:collapse;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden"><tr style="background:#f4f4f5">
+<td style="padding:9px 14px;font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Item</td>
+<td style="padding:9px 14px;font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Price</td>
+<td style="padding:9px 14px;font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Delivery</td>
+</tr>${trs}</table>`;
 }
 
 async function draftPersonalizedEmail({ scenario, persona, customer, orders, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl, inStoreOption }) {
@@ -1317,16 +1368,35 @@ Return ONLY valid JSON, no preamble, no markdown fences:
     if (!parsed.subject || (!parsed.html && !parsed.text)) {
       return _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl, inStoreOption });
     }
-    // For delay-with-alternate: append a CTA button to the LLM-drafted HTML.
-    // We don't trust the LLM to format the swap URL exactly right, so we own this.
-    // Always attach the relevant product photo(s) — code-owned (not left to the
-    // LLM) so the email is reliably "properly personalized" with a real image,
-    // same rationale as why the CTA button below is code-owned, not LLM-authored.
-    const imageHtml = [
-      inStoreOption ? emailProductCard(focusItem, { label: 'Available for pickup' }) : '',
-      alternate ? emailProductCard(alternate, { label: 'In stock — ships now' }) : '',
-    ].filter(Boolean).join('');
-    if (imageHtml) parsed.html = (parsed.html || '') + imageHtml;
+    // Always attach a concrete, code-owned summary — photo, price, and a clear
+    // delivery/status pill for every item involved — never left to the LLM, so
+    // the email reliably nudges with real facts, not just prose. When an
+    // alternate is offered, show BOTH items side by side in a comparison table
+    // so what's delayed/cancelled vs. available now is instantly scannable.
+    const altEta = alternate ? reEvaluatedEta(2) : null;
+    const quickEta = (scenario === 'backInStock' || scenario === 'priceDrop') ? reEvaluatedEta(2) : null;
+    const originalStatus = scenario === 'cancel'
+      ? (inStoreOption ? 'Available for pickup today' : 'Cancelled — sold out online')
+      : scenario === 'delay'
+        ? (eta ? `Delayed — new ETA ${eta}` : '')
+        : (quickEta ? `In stock — arrives ${quickEta}` : '');
+    const originalTone = scenario === 'cancel' ? (inStoreOption ? 'pickup' : 'cancel') : scenario === 'delay' ? 'delay' : 'instock';
+
+    let detailHtml = '';
+    if (alternate) {
+      detailHtml = emailComparisonTable([
+        { label: scenario === 'cancel' ? 'Cancelled online' : 'Currently ordered', product: focusItem, status: originalStatus, statusTone: originalTone },
+        { label: 'In stock now', product: alternate, status: `Ships now — arrives ${altEta}`, statusTone: 'instock' },
+      ]);
+    } else if (inStoreOption) {
+      detailHtml = emailProductCard(focusItem, { label: 'Available for pickup', status: `Ready today at ${inStoreOption.store.name}`, statusTone: 'pickup' });
+    } else if (focusItem) {
+      detailHtml = emailProductCard(focusItem, {
+        label: scenario === 'backInStock' ? 'Back in stock' : scenario === 'priceDrop' ? 'Price drop' : 'Your order',
+        status: originalStatus || undefined, statusTone: originalTone,
+      });
+    }
+    if (detailHtml) parsed.html = (parsed.html || '') + detailHtml;
 
     if (acceptSwapUrl && alternate) {
       const cta = `<p style="margin-top:24px"><a href="${acceptSwapUrl}" style="display:inline-block;padding:14px 28px;background:#2563eb;color:#0a0a0f;border-radius:999px;text-decoration:none;font-weight:700">Accept the alternate — ship now</a></p><p style="color:#888;font-size:12px;margin-top:8px">Clicking the button cancels the delayed order and ships ${alternate.name} right away.</p>`;
@@ -1343,6 +1413,7 @@ Return ONLY valid JSON, no preamble, no markdown fences:
 // Templated fallback so a flaky LLM never breaks the demo.
 function _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore, delayDays, acceptSwapUrl, inStoreOption }) {
   const sign = '<p>— The Academy Sports + Outdoors Team</p>';
+  const altEta = alternate ? reEvaluatedEta(2) : null;
   const ctaButton = (acceptSwapUrl && alternate)
     ? `<p style="margin-top:24px"><a href="${acceptSwapUrl}" style="display:inline-block;padding:14px 28px;background:#2563eb;color:#0a0a0f;border-radius:999px;text-decoration:none;font-weight:700">Accept the alternate — ship now</a></p><p style="color:#888;font-size:12px;margin-top:8px">Clicking the button cancels the delayed order and ships ${alternate.name} right away.</p>`
     : '';
@@ -1357,33 +1428,48 @@ function _fallbackEmail({ scenario, pName, focusItem, alternate, eta, homeStore,
       if (alternate && acceptSwapUrl) {
         return wrap(
           `Your order is delayed — here's a faster option`,
-          `<p>Hi ${pName},</p><p>Your recent order is running ${delayDays || 'several'} days behind — we're sorry. Updated ETA: <strong>${eta}</strong>.</p><p>If you'd rather not wait, we have <strong>${alternate?.name}</strong> ($${alternate?.price?.toFixed(2)}) in stock and can ship it right away. We'll cancel the delayed order and you keep the savings.</p>`,
-          emailProductCard(alternate, { label: 'In stock — ships now' }) + ctaButton, ctaText
+          `<p>Hi ${pName},</p><p>Your recent order is running ${delayDays || 'several'} days behind — we're sorry. Updated ETA: <strong>${eta}</strong>.</p><p>If you'd rather not wait, we have <strong>${alternate?.name}</strong> ($${alternate?.price?.toFixed(2)}) in stock and can ship it right away. We'll cancel the delayed order and you keep the savings.</p><p>Here's exactly how they compare:</p>`,
+          emailComparisonTable([
+            { label: 'Currently ordered', product: focusItem, status: `Delayed — new ETA ${eta}`, statusTone: 'delay' },
+            { label: 'In stock now', product: alternate, status: `Ships now — arrives ${altEta}`, statusTone: 'instock' },
+          ]) + ctaButton, ctaText
         );
       }
       if (inStoreOption) {
         return wrap(
           `Your order is delayed — but it's on our shelf nearby`,
           `<p>Hi ${pName},</p><p>Your recent order is running about ${delayDays || 'a few'} days behind — sorry about that. New ETA: <strong>${eta}</strong>.</p><p>Heads up: "${focusItem?.title}" is on the shelf at our <strong>${inStoreOption.store.name}</strong>${inStoreOption.isHome ? ' (your home store)' : ''} location right now. If you'd rather pick it up today instead of waiting:</p><p style="margin:14px 0;padding:12px 14px;background:#f5f7ff;border-radius:8px;font-size:14px"><strong>${inStoreOption.store.name}</strong><br/>${inStoreOption.store.address}<br/><span style="color:#666">${inStoreOption.store.hours}</span></p>`,
-          emailProductCard(focusItem, { label: 'Available for pickup' })
+          emailProductCard(focusItem, { label: 'Available for pickup', status: `Ready today at ${inStoreOption.store.name}`, statusTone: 'pickup' })
         );
       }
-      return wrap(`A quick update on your order`, `<p>Hi ${pName},</p><p>Your recent order is running a little behind — we're sorry for the wait. Your updated delivery date is <strong>${eta}</strong>. To make up for it, your next order ships expedited on us.</p>`, emailProductCard(focusItem, { label: 'Your order' }));
+      return wrap(`A quick update on your order`, `<p>Hi ${pName},</p><p>Your recent order is running a little behind — we're sorry for the wait. Your updated delivery date is <strong>${eta}</strong>. To make up for it, your next order ships expedited on us.</p>`, emailProductCard(focusItem, { label: 'Your order', status: `Delayed — new ETA ${eta}`, statusTone: 'delay' }));
     case 'cancel':
       if (inStoreOption) {
         return wrap(
           `"${focusItem?.title}" — out online, but in stock locally`,
-          `<p>Hi ${pName},</p><p>Bad news first: "${focusItem?.title}" sold out online before we could ship it. Two ways we can make it right:</p><p style="margin:14px 0;padding:12px 14px;background:#f5f7ff;border-radius:8px;font-size:14px"><strong>Option 1 · Pick it up locally</strong><br/>The same item is on the shelf at <strong>${inStoreOption.store.name}</strong>${inStoreOption.isHome ? ' (your home store)' : ''}<br/>${inStoreOption.store.address}<br/><span style="color:#666">${inStoreOption.store.hours}</span></p><p style="margin:14px 0;padding:12px 14px;background:#fff5f0;border-radius:8px;font-size:14px"><strong>Option 2 · We ship you an alternative</strong><br/><strong>${alternate?.name}</strong> · $${alternate?.price?.toFixed(2)} — in stock and ready to go.</p>`,
-          emailProductCard(focusItem, { label: 'Option 1 — pick up locally' }) + emailProductCard(alternate, { label: 'Option 2 — ships to you' }) + ctaButton, ctaText
+          `<p>Hi ${pName},</p><p>Bad news first: "${focusItem?.title}" sold out online before we could ship it. Two ways we can make it right — here's exactly what's available and when:</p>`,
+          emailComparisonTable([
+            { label: 'Cancelled online', product: focusItem, status: 'Available for pickup today', statusTone: 'pickup' },
+            { label: 'Or, ships to you', product: alternate, status: `Ships now — arrives ${altEta}`, statusTone: 'instock' },
+          ]) + `<p style="margin:14px 0;padding:12px 14px;background:#f5f7ff;border-radius:8px;font-size:14px"><strong>Pickup location</strong><br/>${inStoreOption.store.name}${inStoreOption.isHome ? ' (your home store)' : ''}<br/>${inStoreOption.store.address}<br/><span style="color:#666">${inStoreOption.store.hours}</span></p>` + ctaButton, ctaText
         );
       }
-      return wrap(`We've got a great alternative for you`, `<p>Hi ${pName},</p><p>Unfortunately "${focusItem?.title}" sold out before we could ship it. The good news: <strong>${alternate?.name}</strong> ($${alternate?.price?.toFixed(2)}) is in stock and a great match — we can ship it right away. Just reply or tap to swap.</p>`, emailProductCard(alternate, { label: 'Shipping to you instead' }));
-    case 'backInStock':
-      return wrap(`Back in stock at your store`, `<p>Hi ${pName},</p><p>"${focusItem?.title}" is back in stock${homeStore ? ` at ${homeStore.name}` : ''} — grab it before it's gone again.</p>`, emailProductCard(focusItem, { label: 'Back in stock' }));
+      return wrap(`We've got a great alternative for you`, `<p>Hi ${pName},</p><p>Unfortunately "${focusItem?.title}" sold out before we could ship it. The good news: <strong>${alternate?.name}</strong> ($${alternate?.price?.toFixed(2)}) is in stock and a great match — we can ship it right away. Just reply or tap to swap.</p>`,
+        emailComparisonTable([
+          { label: 'Cancelled', product: focusItem, status: 'Cancelled — sold out online', statusTone: 'cancel' },
+          { label: 'In stock now', product: alternate, status: `Ships now — arrives ${altEta}`, statusTone: 'instock' },
+        ])
+      );
+    case 'backInStock': {
+      const restockEta = reEvaluatedEta(2);
+      return wrap(`Back in stock at your store`, `<p>Hi ${pName},</p><p>"${focusItem?.title}" is back in stock${homeStore ? ` at ${homeStore.name}` : ''} — grab it before it's gone again.</p>`, emailProductCard(focusItem, { label: 'Back in stock', status: `In stock — arrives ${restockEta}`, statusTone: 'instock' }));
+    }
     case 'winBack':
       return wrap(`We miss you, ${pName}`, `<p>Hi ${pName},</p><p>It's been a while! Here's 10% off your next order to welcome you back.</p>`);
-    case 'priceDrop':
-      return wrap(`Price drop on something you love`, `<p>Hi ${pName},</p><p>"${focusItem?.title}" just dropped in price — now's a great time to grab another.</p>`, emailProductCard(focusItem, { label: 'Price drop' }));
+    case 'priceDrop': {
+      const shipEta = reEvaluatedEta(2);
+      return wrap(`Price drop on something you love`, `<p>Hi ${pName},</p><p>"${focusItem?.title}" just dropped in price — now's a great time to grab another.</p>`, emailProductCard(focusItem, { label: 'Price drop', status: `In stock — arrives ${shipEta}`, statusTone: 'instock' }));
+    }
     default:
       return wrap(`An update from Academy`, `<p>Hi ${pName},</p><p>We've got an update on your account.</p>`);
   }
@@ -3352,9 +3438,8 @@ const TopBar = () => {
       color: T.text,
     }}>
       <div style={{ maxWidth: 1400, margin: '0 auto', padding: '16px 32px', display: 'flex', alignItems: 'center', gap: 32 }}>
-        <button onClick={() => setView('home')} style={{ background: 'none', border: 0, color: T.text, cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'baseline', gap: 10 }}>
-          <span className="display" style={{ fontSize: 24, fontStyle: 'italic' }}>Academy</span>
-          <span className="mono" style={{ color: T.amber }}>Sports + Outdoors</span>
+        <button onClick={() => setView('home')} style={{ background: 'none', border: 0, color: T.text, cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <img src={`${import.meta.env.BASE_URL}academy-logo.png`} alt="Academy Sports + Outdoors" style={{ height: 40, width: 'auto', display: 'block' }} />
         </button>
         <nav style={{ display: 'flex', gap: 4, fontSize: 13, fontWeight: 500, marginLeft: 16 }}>
           {/* Home */}
@@ -6336,7 +6421,7 @@ const OrdersPage = () => {
     setDisruption(d => ({
       ...d,
       [order.orderNumber]: sendRes.success
-        ? { status: 'sent', scenario, msg: successMsg, to: recipientEmail }
+        ? { status: 'sent', scenario, msg: successMsg, to: sendRes.to || recipientEmail }
         : { status: 'error', scenario, msg: sendRes.error || 'Send failed' },
     }));
   };
@@ -7048,7 +7133,7 @@ const DisruptionPanel = () => {
     setLog(l => [{
       scenario,
       status: res.success ? 'sent' : 'error',
-      msg: res.success ? `"${email.subject}" → ${recipientEmail}` : (res.error || 'Send failed'),
+      msg: res.success ? `"${email.subject}" → ${res.to || recipientEmail}` : (res.error || 'Send failed'),
       ts: Date.now(),
     }, ...l].slice(0, 6));
   };
@@ -8778,9 +8863,8 @@ const LoginPage = () => {
       background: `radial-gradient(ellipse at top, ${T.ink2} 0%, ${T.void} 70%)`,
     }}>
       <div style={{ textAlign: 'center', marginBottom: 40 }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, justifyContent: 'center' }}>
-          <span className="display" style={{ fontSize: 44, fontStyle: 'italic', color: T.text }}>Academy</span>
-          <span className="mono" style={{ color: T.amber, fontSize: 14 }}>Sports + Outdoors</span>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <img src={`${import.meta.env.BASE_URL}academy-logo.png`} alt="Academy Sports + Outdoors" style={{ height: 110, width: 'auto', display: 'block' }} />
         </div>
         <p style={{ color: T.text2, fontSize: 14, marginTop: 12 }}>
           Sign in to see your personalized experience.
@@ -9007,9 +9091,8 @@ const SignupPage = () => {
       background: `radial-gradient(ellipse at top, ${T.ink2} 0%, ${T.void} 70%)`,
     }}>
       <div style={{ textAlign: 'center', marginBottom: 28 }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, justifyContent: 'center' }}>
-          <span className="display" style={{ fontSize: 40, fontStyle: 'italic', color: T.text }}>Academy</span>
-          <span className="mono" style={{ color: T.amber, fontSize: 13 }}>Sports + Outdoors</span>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <img src={`${import.meta.env.BASE_URL}academy-logo.png`} alt="Academy Sports + Outdoors" style={{ height: 96, width: 'auto', display: 'block' }} />
         </div>
         <p style={{ color: T.text2, fontSize: 14, marginTop: 10 }}>
           Create your account — we'll personalize the store to you from the first click.
